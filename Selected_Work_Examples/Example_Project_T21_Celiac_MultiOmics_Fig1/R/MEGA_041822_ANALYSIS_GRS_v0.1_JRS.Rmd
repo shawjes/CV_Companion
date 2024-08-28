@@ -1,0 +1,967 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+#### Load frequently used packages
+```{r}
+library(skimr)
+library(openxlsx)
+library(ggrepel)
+library(dplyr)
+library(tidyr)
+library(data.table)
+library(broom)
+library(broomExtra)
+library(tibble)
+library(sjstats)
+library(car)
+library(lme4)
+library(lmerTest)
+library(ggplot2)
+library(tibble)
+library(modelr)
+library(tidyverse)
+#library(miceadds)
+library(ggforce)
+require(openxlsx)
+library(tidyverse)
+library(caret)
+library(glmnet)
+library(ggplot2)
+library(gridExtra)
+library(MASS) # rlm
+library(lmPerm)
+library(circlize)
+library(RColorBrewer)
+library(ComplexHeatmap)
+
+select <- dplyr::select
+filter <- dplyr::filter
+```
+
+#### Define the directories used in this script
+```{r}
+dir.IlluminaProductFiles <- "/Users/shawjes/Dropbox/EspinosaGroup/DATA_MAIN/MEGA/chr21_genotyping/Illumina_ProductFiles"
+dir.chr21_genotyping <- "/Users/shawjes/Dropbox/EspinosaGroup/DATA_MAIN/MEGA/chr21_genotyping"
+dir.chr21_idatQuants <- "/Users/shawjes/Dropbox/EspinosaGroup/DATA_MAIN/MEGA/chr21_genotyping/idatQuants"
+dir.GRSdata <- "/Users/shawjes/Dropbox/EspinosaGroup/ANALYSIS/Celiac_MultiOmics/GRS/DSMIG_Shared/Manuscript_Figure1/Data"
+dir.GRSplots <- "/Users/shawjes/Dropbox/EspinosaGroup/ANALYSIS/Celiac_MultiOmics/GRS/DSMIG_Shared/Manuscript_Figure1/Plots"
+dir.GRSoriginal.Anno <- "/Users/shawjes/Dropbox/EspinosaGroup/ANALYSIS/Celiac_MultiOmics/GRS/DSMIG_Shared/Manuscript_Figure1/Annotation/GRSoriginal"
+dir.GRSrevised.Anno <- "/Users/shawjes/Dropbox/EspinosaGroup/ANALYSIS/Celiac_MultiOmics/GRS/DSMIG_Shared/Manuscript_Figure1/Annotation/GRSrevised"
+dir.PCA <- '/Users/shawjes/Dropbox/EspinosaGroup/ANALYSIS/Celiac_MultiOmics/GRS/DSMIG_Shared/Manuscript_Figure1/Data/PCA'
+dir.Results <- '/Users/shawjes/Dropbox/EspinosaGroup/ANALYSIS/Celiac_MultiOmics/GRS/DSMIG_Shared/Manuscript_Figure1/Results'
+```
+
+#### Print session info for reproducibility
+```{r}
+save.sessionInfo <- sessionInfo()
+
+save.sessionInfo
+```
+
+#### Setting and modifying theme for plots
+```{r}
+theme_set(theme_gray(base_size = 12, base_family = "Arial") +
+            theme(panel.border = element_rect(colour="black", fill = "transparent"),
+                  plot.title = element_text(face="bold", hjust = 0), # lineheight=.8, size=20,
+                  axis.text = element_text(color="black", size = 14),
+                  axis.text.x = element_text(angle = 0, hjust = NULL),
+                  strip.background = element_rect(colour="black", fill = "light grey", size = 1), # adjusts facet label borders (if any)
+                  panel.background = element_blank(),
+                  panel.grid = element_blank()
+          ))
+RedBlue <- c("#CD3333", "#1874CD")
+GrayBlue <- c("grey", "#2b8cbe")
+```
+
+#### Initialize an object to store the column names for the identifiers we want to keep in each analysis dataframe
+```{r}
+ID_colnames <- c("FamilyID", "RecordID", "MEGA.FID", "MEGA.IID", "MEGA.LabID")
+```
+
+#### Read in prepared metadata
+```{r}
+setwd(dir.GRSdata)
+analysis_meta <- fread("MEGA_041822_META_CeliacGRS_v0.1_JRS.csv") %>%
+  select(ID_colnames, Celiac, LabID, Celiac, EXCLUDE_from_analysis, EXCLUDE_reason) %>%
+  unique()
+
+analysis_meta
+```
+
+#### Read in prepared analysis datasets and keep only the IDs included in analysis
+```{r}
+setwd(dir.GRSdata)
+analysisData.GRSorig <- fread("MEGA_041822_AnalysisData_CDGRS_Sharp2019_v0.1_JRS.csv") %>%
+  left_join(analysis_meta, by = ID_colnames) %>%
+  filter(EXCLUDE_from_analysis == 0)
+
+analysisData.GRSrevised <- fread("MEGA_041822_AnalysisData_CDGRS_Sharp2022_v0.1_JRS.csv") %>%
+  left_join(analysis_meta, by = ID_colnames) %>%
+  filter(EXCLUDE_from_analysis == 0)
+
+analysisData.GRSorig
+analysisData.GRSrevised
+```
+
+#### Check that AFTER applying the EXCLUDE_from_analysis filter, unique IIDs x unique variants = nrows
+```{r}
+analysisData.GRSorig %>% nrow()
+(analysisData.GRSorig %>% select(`Variant (Sharp 2019)`) %>% unique() %>% nrow())*(analysisData.GRSorig %>% select(RecordID) %>% unique() %>% nrow())
+
+analysisData.GRSrevised %>% nrow()
+(analysisData.GRSrevised %>% select(`Variant (Sharp 2022)`) %>% unique() %>% nrow())*(analysisData.GRSrevised %>% select(RecordID) %>% unique() %>% nrow())
+```
+
+#### Read in prepared ancestry PCs
+```{r}
+setwd(dir.PCA)
+ancestry_PCs <- fread("MEGA_041822_Espinosa_MEGA2_HTP_GS_08132019_updated_callrate_passing_QC_KEEPforHLAvsCeliac_EXCLUDEvariants_mind05_geno0.02_maf0.05_PRUNEDindeppairwise0.2_v0.1_JRS.eigenvec") %>%
+  select(FID, IID, PC1, PC2, PC3, PC4, PC5) %>%
+  rename(MEGA.FID = FID, MEGA.IID = IID)
+
+ancestry_PCs
+```
+
+#### Add PCs for ancestry and prepare the dataframes for analysis of GRS vs. Celiac status
+```{r}
+analysisData.GRS2019 <- analysisData.GRSorig %>%
+  select(GRS_version, GRS_reference,
+         ID_colnames, Celiac,
+         GRS) %>%
+  unique() %>%
+  left_join(ancestry_PCs, by = c("MEGA.FID", "MEGA.IID"))
+
+analysisData.GRS2022 <- analysisData.GRSrevised %>%
+  select(GRS_version, GRS_reference,
+         ID_colnames, Celiac,
+         GRS) %>%
+  unique() %>%
+  left_join(ancestry_PCs, by = c("MEGA.FID", "MEGA.IID"))
+
+analysisData.GRS2019
+analysisData.GRS2022
+```
+
+#### Prepare dataframes for analysis of individual GRS variants vs. Celiac status
+```{r}
+analysisData.GRSvariants2019 <- analysisData.GRSorig %>%
+  select(GRS_version, GRS_reference,
+         ID_colnames, Celiac,
+         `Variant (Sharp 2019)`, Score_Allele, Dosage_for_GRS,
+         `Putative Gene (Sharp 2019)`) %>%
+  unique() %>%
+  left_join(ancestry_PCs, by = c("MEGA.FID", "MEGA.IID"))
+
+analysisData.GRSvariants2022 <- analysisData.GRSrevised %>%
+  select(GRS_version, GRS_reference,
+         ID_colnames, Celiac,
+         `Variant (Sharp 2022)`, Score_Allele, Dosage_for_GRS,
+         `Putative Gene (Sharp 2019)`) %>%
+  unique() %>%
+  left_join(ancestry_PCs, by = c("MEGA.FID", "MEGA.IID"))
+
+analysisData.GRSvariants2019
+analysisData.GRSvariants2022
+
+# Check that nrows still makes sense
+analysisData.GRSvariants2019 %>% nrow()
+(analysisData.GRSvariants2019 %>% select(`Variant (Sharp 2019)`) %>% unique() %>% nrow())*(analysisData.GRSvariants2019 %>% select(RecordID) %>% unique() %>% nrow())
+
+analysisData.GRSvariants2022 %>% nrow()
+(analysisData.GRSvariants2022 %>% select(`Variant (Sharp 2022)`) %>% unique() %>% nrow())*(analysisData.GRSvariants2022 %>% select(RecordID) %>% unique() %>% nrow())
+```
+
+#### Check that we have the expected number of Celiac cases and controls in each analysis dataset
+```{r}
+analysisData.GRS2019 %>%
+  select(RecordID, Celiac) %>%
+  unique() %>%
+  group_by(Celiac) %>%
+  summarise(N = n())
+
+analysisData.GRS2022 %>%
+  select(RecordID, Celiac) %>%
+  unique() %>%
+  group_by(Celiac) %>%
+  summarise(N = n())
+
+analysisData.GRSvariants2019 %>%
+  select(RecordID, Celiac) %>%
+  unique() %>%
+  group_by(Celiac) %>%
+  summarise(N = n())
+
+analysisData.GRSvariants2022 %>%
+  select(RecordID, Celiac) %>%
+  unique() %>%
+  group_by(Celiac) %>%
+  summarise(N = n())
+
+# Good.
+```
+
+##### Check that # variants * # individuals = # rows
+```{r}
+length(unique(analysisData.GRSvariants2019$MEGA.IID))
+length(unique(analysisData.GRSvariants2019$`Variant (Sharp 2019)`))
+identical(nrow(analysisData.GRSvariants2019),
+          length(unique(analysisData.GRSvariants2019$MEGA.IID))*length(unique(analysisData.GRSvariants2019$`Variant (Sharp 2019)`)))
+
+length(unique(analysisData.GRSvariants2022$MEGA.IID))
+length(unique(analysisData.GRSvariants2022$`Variant (Sharp 2022)`))
+identical(nrow(analysisData.GRSvariants2022),
+          length(unique(analysisData.GRSvariants2022$MEGA.IID))*length(unique(analysisData.GRSvariants2022$`Variant (Sharp 2022)`)))
+```
+
+#### Verify that the two versions of GRS are not identical
+Although the score weights do not change from GRS 2019 to GRS 2022, the dosage values for SNPs that were replaced are not identical. Therefore, the GRS calculated from the 2019 SNP list should be slightly different from the GRS calculated from the 2022 SNP list.
+```{r}
+analysisData.GRS2019 %>%
+  select(MEGA.IID, GRS) %>%
+  unique() %>%
+  rename(GRS_2019 = GRS) %>%
+  full_join(analysisData.GRS2022 %>%
+              select(MEGA.IID, GRS) %>%
+              unique() %>%
+              rename(GRS_2022 = GRS),
+            by = "MEGA.IID") %>%
+  mutate(abs_Delta_GRS = abs(GRS_2022 - GRS_2019)) %>%
+  arrange(desc(abs_Delta_GRS))
+
+# Good.
+```
+
+#### View the four analysis dataframes to be used as input to logistic regression models
+```{r}
+analysisData.GRS2019
+
+analysisData.GRS2022
+
+analysisData.GRSvariants2019
+
+analysisData.GRSvariants2022
+```
+
+#### Run logistic regression to test for association of GRS with Celiac status among T21s
+```{r}
+set.seed(1234)
+fit.GRS2019 <- glm(Celiac ~ GRS,
+               family = binomial(link = "logit"),
+               data = analysisData.GRS2019)
+
+set.seed(1234)
+fit.GRS2022 <- glm(Celiac ~ GRS,
+               family = binomial(link = "logit"),
+               data = analysisData.GRS2022)
+
+results.GRS2019 <- fit.GRS2019  %>% tidy(conf.int = TRUE) %>%
+  select(-c(std.error, statistic)) %>%
+  rename(Term = term,
+         logOR = estimate,
+         conf.low_logOR = conf.low,
+         conf.high_logOR = conf.high,
+         P = p.value) %>%
+  mutate(OR = exp(logOR),
+         conf.low_OR = exp(conf.low_logOR),
+         conf.high_OR = exp(conf.high_logOR)) %>%
+  #select(-c(logOR, conf.low_logOR, conf.high_logOR)) %>%
+  mutate(`95% CI` = paste("(", round(conf.low_OR, digits = 2), ", ", round(conf.high_OR, digits = 2), ")", sep = "")) %>%
+  mutate(OR = round(OR, digits = 2),
+         P = round(P, digits = 4)) %>%
+  filter(Term == "GRS") %>%
+  mutate(Term = gsub("GRS", "GRS*", Term)) %>%
+  select(Term, logOR, OR, `95% CI`, P)
+
+results.GRS2022 <- fit.GRS2022 %>% tidy(conf.int = TRUE) %>%
+  select(-c(std.error, statistic)) %>%
+  rename(Term = term,
+         logOR = estimate, # The 'estimate' column from a logistic regression represents the logOR
+         conf.low_logOR = conf.low,
+         conf.high_logOR = conf.high,
+         P = p.value) %>%
+  mutate(OR = exp(logOR), # OR = e^OR = exp(OR)
+         conf.low_OR = exp(conf.low_logOR),
+         conf.high_OR = exp(conf.high_logOR)) %>%
+  #select(-c(logOR conf.low_logOR, conf.high_logOR)) %>%
+  mutate(`95% CI` = paste("(", round(conf.low_OR, digits = 2), ", ", round(conf.high_OR, digits = 2), ")", sep = "")) %>%
+  mutate(OR = round(OR, digits = 2),
+         P = round(P, digits = 4)) %>%
+  filter(Term == "GRS") %>%
+  mutate(Term = gsub("GRS", "GRS*", Term)) %>%
+  select(Term, logOR, OR, `95% CI`, P)
+
+results.GRS2019
+results.GRS2022
+
+setwd(dir.Results)
+fwrite(results.GRS2019, "MEGA_041822_RESULTS_CDGRS2019_GRS_vs_Celiac_v0.1_JRS.csv")
+fwrite(results.GRS2022, "MEGA_041822_RESULTS_CDGRS2022_GRS_vs_Celiac_v0.1_JRS.csv")
+```
+
+#### Set theme and colors for plots
+```{r}
+theme_set(theme_gray(base_size = 12, base_family = "Arial") +
+            theme(panel.border = element_rect(colour="black", fill = "transparent"),
+                  plot.title = element_text(face="bold", hjust = 0), # lineheight=.8, size=20,
+                  axis.text = element_text(color="black", size = 11),
+                  axis.text.x = element_text(angle = 0, hjust = NULL),
+                  strip.background = element_rect(colour="black", fill = "light grey", size = 1), # adjusts facet label borders (if any)
+                  panel.background = element_blank(),
+                  panel.grid = element_blank()
+          ))
+
+GrayBlue <- c("grey", "#2b8cbe")
+RedBlue <- c("#CD3333", "#1874CD")
+```
+
+#### Plot the distribution of modified GRS among T21s with vs. without Celiac
+```{r}
+theme_set(theme_gray(base_size = 12, base_family = "Arial") +
+            theme(panel.border = element_rect(colour="black", fill = "transparent"),
+                  plot.title = element_text(face="bold", hjust = 0, size = 12), # lineheight=.8, size=20,
+                  axis.text = element_text(color="black", size = 11),
+                  axis.text.x = element_text(angle = 0, hjust = NULL),
+                  strip.background = element_rect(colour="black", fill = "light grey", size = 1), # adjusts facet label borders (if any)
+                  panel.background = element_blank(),
+                  panel.grid = element_blank()
+          ))
+
+analysisData.GRS2019$GRS %>% summary() # xlim(-1, 6.5)
+#   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+#  -0.653   1.016   2.055   2.437   3.894   6.490 
+analysisData.GRS2022$GRS %>% summary() # xlim(-1, 6.5)
+#   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+#  -0.653   1.016   2.050   2.449   3.966   6.490 
+  
+analysisData.GRS2019 %>%
+  mutate(Group = ifelse(Celiac == 0, "DS without CD", ifelse(Celiac == 1, "DS with CD", NA)),
+         Group = factor(Group, levels = c("DS without CD", "DS with CD")))  %>%
+  ggplot(aes(x = GRS, y = ..scaled.., color = Group, fill = Group)) +
+  geom_density(alpha = 0.5) +
+  scale_colour_manual(values = GrayBlue) +
+  scale_fill_manual(values = GrayBlue) + 
+  theme(legend.position = "bottom",
+        legend.title = element_blank(),
+        plot.caption = element_text(hjust = 0),
+        aspect.ratio = 1) +
+  xlab("GRS*") +
+  labs(title = "Celiac GRS* in DS +/- CD",
+       subtitle = paste("OR = ", results.GRS2019$OR[1], " ", results.GRS2019$`95% CI`[1], "\nP<", results.GRS2019$P[1], sep = ""),
+       caption = "*Sharp et al., 2019")
+
+filename <- "MEGA_041822_DensityPlot_GRS2019_by_CeliacStatus_v0.1_JRS"
+setwd(dir.GRSplots)
+ggsave(filename = paste(filename, ".png", sep = ""), width = 3.6, height = 3.5, units = "in")
+setwd(dir.GRSplots)
+ggsave(filename = paste(filename, ".pdf", sep = ""), device = cairo_pdf, width = 3.6, height = 3.5, units = "in")
+
+analysisData.GRS2022 %>%
+  mutate(Group = ifelse(Celiac == 0, "DS without CD", ifelse(Celiac == 1, "DS with CD", NA)),
+         Group = factor(Group, levels = c("DS without CD", "DS with CD")))  %>%
+  ggplot(aes(x = GRS, y = ..scaled.., color = Group, fill = Group)) +
+  geom_density(alpha = 0.5) +
+  scale_colour_manual(values = GrayBlue) +
+  scale_fill_manual(values = GrayBlue) + 
+  theme(legend.position = "bottom",
+        legend.title = element_blank(),
+        plot.caption = element_text(hjust = 0),
+        aspect.ratio = 1) +
+  xlab("GRS*") +
+  labs(title = "Celiac GRS* in DS +/- CD",
+       subtitle = paste("OR = ", results.GRS2022$OR[1], " ", results.GRS2022$`95% CI`[1], "\nP<", results.GRS2022$P[1], sep = ""),
+       caption = "*Sharp et al., 2022")
+
+filename <- "MEGA_041822_DensityPlot_GRS2022_by_CeliacStatus_v0.1_JRS"
+setwd(dir.GRSplots)
+ggsave(filename = paste(filename, ".png", sep = ""), width = 3.6, height = 3.5, units = "in")
+setwd(dir.GRSplots)
+ggsave(filename = paste(filename, ".pdf", sep = ""), device = cairo_pdf, width = 3.6, height = 3.5, units = "in")
+```
+
+#### Plot ROC curves for GRS in DS
+
+#### For original GRS (2019)
+```{r}
+# AUC from pROC::roc()
+library(pROC)
+
+resRoc2019 <- roc(analysisData.GRS2019$Celiac ~ fit.GRS2019$fitted)
+
+# Create a basic roc object
+rocobj2019 <- roc(analysisData.GRS2019$Celiac ~ fit.GRS2019$fitted, ci = TRUE, plot=FALSE)
+rocobj2019$ci # 95% CI: 0.6146-0.8517 (DeLong)
+ciobj2019 <- ci.se(rocobj2019, specificities=seq(0, 1, l=25))
+dat.ci2019 <- data.frame(x = as.numeric(rownames(ciobj2019)),
+                     lower = ciobj2019[, 1],
+                     upper = ciobj2019[, 3])
+
+theme_set(theme_gray(base_size = 12, base_family = "Arial") +
+            theme(panel.border = element_rect(colour="black", fill = "transparent"),
+                  plot.title = element_text(face="bold", hjust = 0, size = 11), # lineheight=.8, size=20,
+                  axis.text = element_text(color="black", size = 11),
+                  axis.text.x = element_text(angle = 0, hjust = NULL),
+                  strip.background = element_rect(colour="black", fill = "light grey", size = 1), # adjusts facet label borders (if any)
+                  panel.background = element_blank(),
+                  panel.grid = element_blank()
+          ))
+g2019 <- ggroc(rocobj2019,
+           alpha = 0.9,
+           ci = TRUE,
+           colour = RedBlue[[1]],
+           #colour = GrayBlue[[2]],
+           #linetype = 2,
+           size = 1,
+           legacy.axes = TRUE
+           ) +
+  geom_segment(aes(x = 0, xend = 1, y = 0, yend = 1), color=GrayBlue[[2]]) + #, linetype="dashed")
+  coord_equal() +
+  labs(title = "Predictive accuracy of GRS* in DS",
+       subtitle = paste("Area under the curve: ", round(resRoc2019$auc, digits = 4), sep = ""),
+       caption = "Logistic: Celiac ~ GRS*\n*Sharp et al., 2019") +
+  theme(plot.caption = element_text(hjust = 0)) +
+  ylab("Sensitivity") +
+  xlab("1 - Specificity")
+g2019
+
+filename <- "MEGA_041822_ROC_GRS2019_vs_CeliacStatus_v0.1_JRS"
+setwd(dir.GRSplots)
+ggsave(filename = paste(filename, ".png", sep = ""), width = 3.5, height = 3.5, units = "in")
+setwd(dir.GRSplots)
+ggsave(filename = paste(filename, ".pdf", sep = ""), device = cairo_pdf, width = 3.5, height = 3.5, units = "in")
+```
+
+#### For revised GRS (2022)
+```{r}
+# AUC from pROC::roc()
+library(pROC)
+
+resRoc2022 <- roc(analysisData.GRS2022$Celiac ~ fit.GRS2022$fitted)
+
+# Create a basic roc object
+rocobj2022 <- roc(analysisData.GRS2022$Celiac ~ fit.GRS2022$fitted, ci = TRUE, plot=FALSE)
+rocobj2022$ci # 95% CI: 0.6146-0.8517 (DeLong)
+ciobj2022 <- ci.se(rocobj2022, specificities=seq(0, 1, l=25))
+dat.ci2022 <- data.frame(x = as.numeric(rownames(ciobj2022)),
+                     lower = ciobj2022[, 1],
+                     upper = ciobj2022[, 3])
+
+theme_set(theme_gray(base_size = 12, base_family = "Arial") +
+            theme(panel.border = element_rect(colour="black", fill = "transparent"),
+                  plot.title = element_text(face="bold", hjust = 0, size = 11), # lineheight=.8, size=20,
+                  axis.text = element_text(color="black", size = 11),
+                  axis.text.x = element_text(angle = 0, hjust = NULL),
+                  strip.background = element_rect(colour="black", fill = "light grey", size = 1), # adjusts facet label borders (if any)
+                  panel.background = element_blank(),
+                  panel.grid = element_blank()
+          ))
+g2022 <- ggroc(rocobj2022,
+           alpha = 0.9,
+           ci = TRUE,
+           colour = RedBlue[[1]],
+           #colour = GrayBlue[[2]],
+           #linetype = 2,
+           size = 1,
+           legacy.axes = TRUE
+           ) +
+  geom_segment(aes(x = 0, xend = 1, y = 0, yend = 1), color=GrayBlue[[2]]) + #, linetype="dashed")
+  coord_equal() +
+  labs(title = "Predictive accuracy of GRS* in DS",
+       subtitle = paste("Area under the curve: ", round(resRoc2022$auc, digits = 4), sep = ""),
+       caption = "Logistic: Celiac ~ GRS*\n*Sharp et al., 2022") +
+  theme(plot.caption = element_text(hjust = 0)) +
+  ylab("Sensitivity") +
+  xlab("1 - Specificity")
+g2022
+
+filename <- "MEGA_041822_ROC_GRS2022_vs_CeliacStatus_v0.1_JRS"
+setwd(dir.GRSplots)
+ggsave(filename = paste(filename, ".png", sep = ""), width = 3.5, height = 3.5, units = "in")
+setwd(dir.GRSplots)
+ggsave(filename = paste(filename, ".pdf", sep = ""), device = cairo_pdf, width = 3.5, height = 3.5, units = "in")
+```
+
+
+#### Split the dataset to facilitate analysis of each variant with a separate logistic regression:
+```{r}
+analysisData.GRSvariants2019.split <- analysisData.GRSvariants2019 %>%
+  mutate(`Variant (Sharp 2019)` = ifelse(grepl("DQ", `Variant (Sharp 2019)`)==TRUE, `Variant (Sharp 2019)`,
+                                         paste(`Variant (Sharp 2019)`, " (", Score_Allele, ")", sep = ""))) %>%
+  split(., .$`Variant (Sharp 2019)`)
+
+analysisData.GRSvariants2022.split <- analysisData.GRSvariants2022 %>%
+  mutate(`Variant (Sharp 2022)` = ifelse(grepl("DQ", `Variant (Sharp 2022)`)==TRUE, `Variant (Sharp 2022)`,
+                                         paste(`Variant (Sharp 2022)`, " (", Score_Allele, ")", sep = ""))) %>%
+  split(., .$`Variant (Sharp 2022)`)
+
+analysisData.GRSvariants2019.split %>% tail(n=2)
+analysisData.GRSvariants2022.split %>% tail(n=2)
+
+analysisData.GRSvariants2019.split %>% names()
+analysisData.GRSvariants2022.split %>% names()
+```
+
+#### Fit an additive genetic model for variant dosage with adjustment for the top 5 PCs for ancestry
+```{r}
+set.seed(1234)
+fit.variants.GRS2019 <- map(analysisData.GRSvariants2019.split,
+                            ~glm(Celiac ~ Dosage_for_GRS + PC1 + PC2 + PC3 + PC4 + PC5,
+                                 family = binomial(link = "logit"),
+                                 data = .))
+set.seed(1234)
+fit.variants.GRS2022 <- map(analysisData.GRSvariants2022.split,
+                            ~glm(Celiac ~ Dosage_for_GRS + PC1 + PC2 + PC3 + PC4 + PC5,
+                                 family = binomial(link = "logit"),
+                                 data = .))
+```
+
+#### Create a results table for each version of the GRS
+```{r}
+results.variants.GRS2019 <- map2(.x = fit.variants.GRS2019,
+                              .y = analysisData.GRSvariants2019.split,
+                              .f = ~tidy(x = .x, conf.int=TRUE, data = .y)) %>%
+  bind_rows(.id="Variant") %>%
+  mutate(Model_Call= 'glm(Celiac ~ Dosage_for_GRS + PC1 + PC2 + PC3 + PC4 + PC5, family = binomial(link = "logit"), data = .)') %>%
+  select(Model_Call, everything()) %>%
+  filter(term == "Dosage_for_GRS") %>%
+  #group_by(term) %>% # Group by term if you haven't already limited your results dataframe to the variable for which you want to calculate adjusted P-values
+  mutate(Q = p.adjust(p.value, method = "BH")) %>%
+  #ungroup() %>%
+  mutate(GRS_version = analysisData.GRSvariants2022$GRS_version[1],
+         GRS_reference = analysisData.GRSvariants2022$GRS_reference[1]) %>%
+  select(GRS_version, GRS_reference, everything()) %>%
+  mutate(Variant = ifelse(Variant == "X/X ()", "X/X", Variant)) %>%
+  rename(logOR = estimate,
+         P = p.value) %>%
+  select(-c(std.error, statistic))
+
+results.variants.GRS2022 <- map2(.x = fit.variants.GRS2022,
+                              .y = analysisData.GRSvariants2022.split,
+                              .f = ~tidy(x = .x, conf.int=TRUE, data = .y)) %>%
+  bind_rows(.id="Variant") %>%
+  mutate(Model_Call= 'glm(Celiac ~ Dosage_for_GRS + PC1 + PC2 + PC3 + PC4 + PC5, family = binomial(link = "logit"), data = .)') %>%
+  select(Model_Call, everything()) %>%
+  filter(term == "Dosage_for_GRS") %>%
+  #group_by(term) %>% # Group by term first if you haven't already limited your results dataframe to the variable for which you want to calculate adjusted P-values
+  mutate(Q = p.adjust(p.value, method = "BH")) %>%
+  #ungroup() %>%
+  mutate(GRS_version = analysisData.GRSvariants2022$GRS_version[1],
+         GRS_reference = analysisData.GRSvariants2022$GRS_reference[1]) %>%
+  select(GRS_version, GRS_reference, everything()) %>%
+  mutate(Variant = ifelse(Variant == "X/X ()", "X/X", Variant)) %>%
+  rename(logOR = estimate,
+         P = p.value) %>%
+  select(-c(std.error, statistic))
+```
+
+#### View and output the results table for each version of the GRS
+```{r}
+results.variants.GRS2019 %>% arrange(P)
+results.variants.GRS2022 %>% arrange(P)
+
+setwd(dir.Results)
+fwrite(results.variants.GRS2019, "MEGA_041822_RESULTS_CDGRS2019_VariantDosage_vs_Celiac_v0.1_JRS.csv")
+fwrite(results.variants.GRS2022, "MEGA_041822_RESULTS_CDGRS2022_VariantDosage_vs_Celiac_v0.1_JRS.csv")
+```
+
+##### Volcano plots
+
+##### GRS 2019
+```{r}
+# results.variants.GRS2019
+
+# Setting and modifying theme for plots
+theme_set(theme_gray(base_size = 12, base_family = "Arial") +
+            theme(panel.border = element_rect(colour="black", fill = "transparent"),
+                  plot.title = element_text(face="bold", hjust = 0), # lineheight=.8, size=20,
+                  axis.text = element_text(color="black", size = 14), 
+                  axis.text.x = element_text(angle = 0, hjust = NULL),
+                  strip.background = element_rect(colour="black", fill = "light grey", size = 1), # adjusts facet label borders (if any)
+                  panel.background = element_blank(),
+                  panel.grid = element_blank()
+          ))
+#
+
+standard_colors <- c("#333333", "#009b4e") 
+
+summary(results.variants.GRS2019$logOR)
+#   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+#-16.193   0.000   0.000  -0.270   0.000   1.471 
+     
+results.variants.GRS2019 %>%
+  mutate(Q.Result_Category = ifelse(Q<0.10 & logOR>0, "Significantly up in DS with CD",
+                                    ifelse(Q<0.10 & logOR<0, "Significantly down in DS with CD", "Not statistically significant")),
+         P.Result_Category = ifelse(P<0.10 & logOR>0, "Significantly up in DS with CD",
+                                    ifelse(P<0.10 & logOR<0, "Significantly down in DS with CD", "Not statistically significant"))) %>%
+  arrange(desc(abs(logOR))) %>%
+  mutate(rank_logOR = row_number()) %>%
+  arrange(P) %>%
+  mutate(rank_P = row_number()) %>%
+  mutate(label = ifelse(rank_logOR<5 | rank_P<5, Variant, "")) %>%
+  ggplot(aes(logOR, -log10(Q))) +
+  geom_hline(yintercept = -log10(0.1), linetype = 2) +
+  geom_vline(xintercept = 0, linetype = 2) +
+  #geom_point(
+  #  aes(color = "All")
+  #  ) +
+  geom_point(data = . %>% filter(Q.Result_Category=="Not statistically significant"),
+             aes(), color = "dark gray") +
+  geom_point(data = . %>% filter(Q.Result_Category=="Significantly up in DS with CD"),
+             aes(), colour = "#153152") +
+  geom_point(data = . %>% filter(Q.Result_Category=="Significantly down in DS with CD"),
+             aes(), colour = "#006c9e") +
+  xlim(-20, 20) +
+  ylim(0,2) +
+  # set colors
+  xlab(bquote(''~log(OR)~'')) +
+  ylab(bquote(''~-log[10](Q)~'')) +
+  #ylab(bquote('-log10'~P[BH]~)) +
+  scale_color_manual(values = c("Not statistically significant" = "grey",
+                                "Significantly up in DS with CD" = "#153152",
+                                "Significantly down in DS with CD" = "#006c9e"), name = NULL) +
+  # Add gene labels
+  geom_text_repel(aes(label = label)) + #, xlim = c(2,4)) +
+  theme(aspect.ratio = 1.2,
+        #legend.position = c(0.15, 0.9), # depends on data scales
+        legend.position = "none" ) +
+   #    legend.background = element_blank() ) +
+  labs(title = "Variant association with Celiac in DS",
+       caption = results.variants.GRS2019$Model_Call[1])
+
+setwd(dir.GRSplots)
+filename <- "MEGA_041822_VolcanoPlot_GRS2019_Celiac_vs_Dosage_adj5PCs_displayQvals_v0.1_JRS"
+ggsave(filename = paste(filename, ".png", sep = ""),
+       width = 5, height = 5, units = "in")
+ggsave(filename = paste(filename, ".pdf", sep = ""),
+       device = cairo_pdf, width = 5, height = 5, units = "in")
+
+results.variants.GRS2019 %>%
+  mutate(Q.Result_Category = ifelse(Q<0.10 & logOR>0, "Significantly up in DS with CD",
+                                    ifelse(Q<0.10 & logOR<0, "Significantly down in DS with CD", "Not statistically significant")),
+         P.Result_Category = ifelse(P<0.10 & logOR>0, "Significantly up in DS with CD",
+                                    ifelse(P<0.10 & logOR<0, "Significantly down in DS with CD", "Not statistically significant"))) %>%
+  arrange(desc(abs(logOR))) %>%
+  mutate(rank_logOR = row_number()) %>%
+  arrange(P) %>%
+  mutate(rank_P = row_number()) %>%
+  mutate(label = ifelse(rank_logOR<5 | rank_P<5, Variant, "")) %>%
+  ggplot(aes(logOR, -log10(P))) +
+  geom_hline(yintercept = -log10(0.1), linetype = 2) +
+  geom_vline(xintercept = 0, linetype = 2) +
+  #geom_point(
+  #  aes(color = "All")
+  #  ) +
+  geom_point(data = . %>% filter(Q.Result_Category=="Not statistically significant"),
+             aes(), color = "dark gray") +
+  geom_point(data = . %>% filter(Q.Result_Category=="Significantly up in DS with CD"),
+             aes(), colour = "#153152") +
+  geom_point(data = . %>% filter(Q.Result_Category=="Significantly down in DS with CD"),
+             aes(), colour = "#006c9e") +
+  xlim(-20, 20) +
+  ylim(0,2) +
+  # set colors
+  xlab(bquote(''~log(OR)~'')) +
+  ylab(bquote(''~-log[10](P)~'')) +
+  #ylab(bquote('-log10'~P[BH]~)) +
+  scale_color_manual(values = c("Not statistically significant" = "grey",
+                                "Significantly up in DS with CD" = "#153152",
+                                "Significantly down in DS with CD" = "#006c9e"), name = NULL) +
+  # Add gene labels
+  geom_text_repel(aes(label = label)) + #, xlim = c(2,4)) +
+  theme(aspect.ratio = 1.2,
+        #legend.position = c(0.15, 0.9), # depends on data scales
+        legend.position = "none" ) +
+   #    legend.background = element_blank() ) +
+  labs(title = "Variant association with Celiac in DS",
+       caption = results.variants.GRS2019$Model_Call[1])
+
+setwd(dir.GRSplots)
+filename <- "MEGA_041822_VolcanoPlot_GRS2019_Celiac_vs_Dosage_adj5PCs_displayPvals_v0.1_JRS"
+ggsave(filename = paste(filename, ".png", sep = ""),
+       width = 5, height = 5, units = "in")
+ggsave(filename = paste(filename, ".pdf", sep = ""),
+       device = cairo_pdf, width = 5, height = 5, units = "in")
+```
+
+##### GRS 2022
+```{r}
+
+results.variants.GRS2022 %>%
+  mutate(Q.Result_Category = ifelse(Q<0.10 & logOR>0, "Significantly up in DS with CD",
+                                    ifelse(Q<0.10 & logOR<0, "Significantly down in DS with CD", "Not statistically significant")),
+         P.Result_Category = ifelse(P<0.10 & logOR>0, "Significantly up in DS with CD",
+                                    ifelse(P<0.10 & logOR<0, "Significantly down in DS with CD", "Not statistically significant"))) %>%
+  arrange(desc(abs(logOR))) %>%
+  mutate(rank_logOR = row_number()) %>%
+  arrange(P) %>%
+  mutate(rank_P = row_number()) %>%
+  mutate(label = ifelse(rank_logOR<5 | rank_P<5, Variant, "")) %>%
+  ggplot(aes(logOR, -log10(Q))) +
+  geom_hline(yintercept = -log10(0.1), linetype = 2) +
+  geom_vline(xintercept = 0, linetype = 2) +
+  #geom_point(
+  #  aes(color = "All")
+  #  ) +
+  geom_point(data = . %>% filter(Q.Result_Category=="Not statistically significant"),
+             aes(), color = "dark gray") +
+  geom_point(data = . %>% filter(Q.Result_Category=="Significantly up in DS with CD"),
+             aes(), colour = "#153152") +
+  geom_point(data = . %>% filter(Q.Result_Category=="Significantly down in DS with CD"),
+             aes(), colour = "#006c9e") +
+  xlim(-20, 20) +
+  ylim(0,2) +
+  # set colors
+  xlab(bquote(''~log(OR)~'')) +
+  ylab(bquote(''~-log[10](Q)~'')) +
+  #ylab(bquote('-log10'~P[BH]~)) +
+  scale_color_manual(values = c("Not statistically significant" = "grey",
+                                "Significantly up in DS with CD" = "#153152",
+                                "Significantly down in DS with CD" = "#006c9e"), name = NULL) +
+  # Add gene labels
+  geom_text_repel(aes(label = label)) + #, xlim = c(2,4)) +
+  theme(aspect.ratio = 1.2,
+        #legend.position = c(0.15, 0.9), # depends on data scales
+        legend.position = "none" ) +
+   #    legend.background = element_blank() ) +
+  labs(title = "Variant association with Celiac in DS",
+       caption = results.variants.GRS2022$Model_Call[1])
+
+setwd(dir.GRSplots)
+filename <- "MEGA_041822_VolcanoPlot_GRS2022_Celiac_vs_Dosage_adj5PCs_displayQvals_v0.1_JRS"
+ggsave(filename = paste(filename, ".png", sep = ""),
+       width = 5, height = 5, units = "in")
+ggsave(filename = paste(filename, ".pdf", sep = ""),
+       device = cairo_pdf, width = 5, height = 5, units = "in")
+
+results.variants.GRS2022 %>%
+  mutate(Q.Result_Category = ifelse(Q<0.10 & logOR>0, "Significantly up in DS with CD",
+                                    ifelse(Q<0.10 & logOR<0, "Significantly down in DS with CD", "Not statistically significant")),
+         P.Result_Category = ifelse(P<0.10 & logOR>0, "Significantly up in DS with CD",
+                                    ifelse(P<0.10 & logOR<0, "Significantly down in DS with CD", "Not statistically significant"))) %>%
+  arrange(desc(abs(logOR))) %>%
+  mutate(rank_logOR = row_number()) %>%
+  arrange(P) %>%
+  mutate(rank_P = row_number()) %>%
+  mutate(label = ifelse(rank_logOR<5 | rank_P<5, Variant, "")) %>%
+  ggplot(aes(logOR, -log10(P))) +
+  geom_hline(yintercept = -log10(0.1), linetype = 2) +
+  geom_vline(xintercept = 0, linetype = 2) +
+  #geom_point(
+  #  aes(color = "All")
+  #  ) +
+  geom_point(data = . %>% filter(Q.Result_Category=="Not statistically significant"),
+             aes(), color = "dark gray") +
+  geom_point(data = . %>% filter(Q.Result_Category=="Significantly up in DS with CD"),
+             aes(), colour = "#153152") +
+  geom_point(data = . %>% filter(Q.Result_Category=="Significantly down in DS with CD"),
+             aes(), colour = "#006c9e") +
+  xlim(-20, 20) +
+  ylim(0,2) +
+  # set colors
+  xlab(bquote(''~log(OR)~'')) +
+  ylab(bquote(''~-log[10](P)~'')) +
+  #ylab(bquote('-log10'~P[BH]~)) +
+  scale_color_manual(values = c("Not statistically significant" = "grey",
+                                "Significantly up in DS with CD" = "#153152",
+                                "Significantly down in DS with CD" = "#006c9e"), name = NULL) +
+  # Add gene labels
+  geom_text_repel(aes(label = label)) + #, xlim = c(2,4)) +
+  theme(aspect.ratio = 1.2,
+        #legend.position = c(0.15, 0.9), # depends on data scales
+        legend.position = "none" ) +
+   #    legend.background = element_blank() ) +
+  labs(title = "Variant association with Celiac in DS",
+       caption = results.variants.GRS2022$Model_Call[1])
+
+setwd(dir.GRSplots)
+filename <- "MEGA_041822_VolcanoPlot_GRS2022_Celiac_vs_Dosage_adj5PCs_displayPvals_v0.1_JRS"
+ggsave(filename = paste(filename, ".png", sep = ""),
+       width = 5, height = 5, units = "in")
+ggsave(filename = paste(filename, ".pdf", sep = ""),
+       device = cairo_pdf, width = 5, height = 5, units = "in")
+
+```
+
+
+
+
+# ARCHIVE
+
+
+
+##### Read in supplemental tables from Sharp et al., 2019
+```{r}
+setwd(dir)
+Table_S2 <- read.xlsx("apt15826-sup-0001-supinfo.xlsx", sheet = "Table S2", startRow = 3) %>%
+  separate(`Odds.Ratio.[95%.CI]`, into = c("OR", "CI"), sep = " ", extra = "merge", remove = TRUE) %>%
+  rename(OR.GRS = OR,
+         CI.GRS = CI,
+         Weight.GRS = `Weight.(β)`)
+Table_S2
+
+setwd(dir)
+Table_S3 <- read.xlsx("apt15826-sup-0001-supinfo.xlsx", sheet = "Table S3", startRow = 3) %>%
+  rename(OR.GRS = OR,
+         Weight.GRS = `Weight.(β)`)
+Table_S3
+```
+
+#### Check that we have the expected number of Celiac cases in the analysis dataset
+```{r}
+analysisData %>%
+  select(RecordID, Celiac) %>%
+  unique() %>%
+  group_by(Celiac) %>%
+  summarise(N = n())
+
+# Good.
+```
+
+#### Check if all of our participants have complete dosage for every HLA-DQ genotype and every non-HLA SNP
+```{r}
+
+```
+
+#### Check for any samples with more than 1 LabID in the analysis data
+```{r}
+
+```
+
+#### Prepare dataframe for analysis of GRS (excluding variant-specific data)
+```{r}
+analysisData.GRS <- analysisData %>%
+  select(-c(Variant, Dosage, MEGA.VariantID,
+            AT_GC_SNP, MEGA.CHR, MEGA.BP, Weight.GRS,)) %>%
+  unique()
+
+analysisData.GRS
+```
+
+#### Run logistic regression to test for association of GRS with Celiac status among T21s
+```{r}
+set.seed(1234)
+fit.GRS <- glm(Celiac ~ GRS,
+               family = binomial(link = "logit"),
+               data = analysisData.GRS)
+
+results.GRS <- fit.GRS %>% tidy(conf.int = TRUE) %>%
+  select(-c(std.error, statistic)) %>%
+  rename(Term = term,
+         logOR = estimate,
+         conf.low_logOR = conf.low,
+         conf.high_logOR = conf.high,
+         P = p.value) %>%
+  mutate(OR = exp(logOR),
+         conf.low_OR = exp(conf.low_logOR),
+         conf.high_OR = exp(conf.high_logOR)) %>%
+  select(-c(logOR, conf.low_logOR, conf.high_logOR)) %>%
+  mutate(`95% CI` = paste("(", round(conf.low_OR, digits = 2), ", ", round(conf.high_OR, digits = 2), ")", sep = "")) %>%
+  mutate(OR = round(OR, digits = 2),
+         P = round(P, digits = 4)) %>%
+  filter(Term == "GRS") %>%
+  mutate(Term = gsub("GRS", "GRS*", Term)) %>%
+  select(Term, OR, `95% CI`, P)
+
+results.GRS
+```
+
+#### Run logistic regression to test for association of Celiac with the non-HLA-DQ component of the GRS
+```{r}
+set.seed(1234)
+fit.GRS_2components <- glm(Celiac ~ GRS.HLADQ_component + GRS.nonHLADQ_component,
+               family = binomial(link = "logit"),
+               data = analysisData.GRS)
+
+results.GRS_2components <- fit.GRS_2components %>% tidy(conf.int = TRUE) %>%
+  select(-c(std.error, statistic)) %>%
+  rename(Term = term,
+         logOR = estimate,
+         conf.low_logOR = conf.low,
+         conf.high_logOR = conf.high,
+         P = p.value) %>%
+  mutate(OR = exp(logOR),
+         conf.low_OR = exp(conf.low_logOR),
+         conf.high_OR = exp(conf.high_logOR)) %>%
+  select(-c(logOR, conf.low_logOR, conf.high_logOR)) %>%
+  mutate(`95% CI` = paste("(", round(conf.low_OR, digits = 2), ", ", round(conf.high_OR, digits = 2), ")", sep = "")) %>%
+  mutate(OR = round(OR, digits = 2),
+         P = round(P, digits = 4)) %>%
+  filter(Term == "GRS.HLADQ_component" | Term == "GRS.nonHLADQ_component") %>%
+  mutate(Term = gsub("GRS.nonHLADQ_component", "GRS*, non-HLA-DQ component", Term),
+         Term = gsub("GRS.HLADQ_component", "GRS*, HLA-DQ component", Term)) %>%
+  select(Term, OR, `95% CI`, P)
+
+results.GRS_2components
+```
+
+#### Create output object to write to multi-sheet XLSX workbook
+```{r}
+results.list <- list("GRS*" = results.GRS,
+     "GRS*, split components" = results.GRS_2components)
+```
+
+#### Save results
+```{R}
+setwd(dir.Results)
+write.xlsx(results.list, "Celiac_022322_RESULTS_Logistic_modifiedGRS_vs_CeliacStatus_v0.1_JRS.xlsx", overwrite=TRUE)
+
+setwd(dir.Results)
+fwrite(results.GRS, "Celiac_022322_RESULTS_Logistic_modifiedGRS_vs_CeliacStatus_v0.1_JRS.csv")
+fwrite(results.GRS, "Celiac_022322_RESULTS_Logistic_modifiedGRS_vs_CeliacStatus_v0.1_JRS.tsv", sep = "\t")
+
+setwd(dir.Results)
+fwrite(results.GRS_2components, "Celiac_022322_RESULTS_Logistic_modifiedGRSsplit_vs_CeliacStatus_v0.1_JRS.csv")
+fwrite(results.GRS_2components, "Celiac_022322_RESULTS_Logistic_modifiedGRSsplit_vs_CeliacStatus_v0.1_JRS.tsv", sep = "\t")
+```
+
+
+#### Plot ROC curves for GRS in DS
+```{r}
+# AUC from pROC::roc()
+library(pROC)
+resRoc <- roc(analysisData.GRS$Celiac ~ fit.GRS_2components$fitted)
+
+# Create a basic roc object
+rocobj <- roc(analysisData.GRS$Celiac ~ fit.GRS_2components$fitted, ci = TRUE, plot=FALSE)
+rocobj$ci # 95% CI: 0.6146-0.8517 (DeLong)
+ciobj <- ci.se(rocobj, specificities=seq(0, 1, l=25))
+dat.ci <- data.frame(x = as.numeric(rownames(ciobj)),
+                     lower = ciobj[, 1],
+                     upper = ciobj[, 3])
+
+theme_set(theme_gray(base_size = 12, base_family = "Arial") +
+            theme(panel.border = element_rect(colour="black", fill = "transparent"),
+                  plot.title = element_text(face="bold", hjust = 0, size = 11), # lineheight=.8, size=20,
+                  axis.text = element_text(color="black", size = 11),
+                  axis.text.x = element_text(angle = 0, hjust = NULL),
+                  plot.caption = element_text(size = 8),
+                  strip.background = element_rect(colour="black", fill = "light grey", size = 1), # adjusts facet label borders (if any)
+                  panel.background = element_blank(),
+                  panel.grid = element_blank()
+          ))
+
+g <- ggroc(rocobj,
+           alpha = 0.9,
+           ci = TRUE,
+           colour = RedBlue[[1]],
+           #colour = GrayBlue[[2]],
+           #linetype = 2,
+           size = 1,
+           legacy.axes = TRUE
+           ) +
+  geom_segment(aes(x = 0, xend = 1, y = 0, yend = 1), color=GrayBlue[[2]]) + #, linetype="dashed")
+  coord_equal() +
+  labs(title = "Predictive accuracy of GRS* in DS",
+       subtitle = paste("Area under the curve: ", round(resRoc$auc, digits = 4), sep = ""),
+       caption = "Logistic: Celiac ~ GRS_HLADQ + GRS_nonHLADQ") +
+  theme(plot.caption = element_text(hjust = 0)) +
+  ylab("Sensitivity") +
+  xlab("1 - Specificity")
+g
+filename <- "MEGA_022322_ROC_modifiedGRS_splitComponents_vs_CeliacStatus_v0.1_JRS"
+setwd(dir.Figures)
+ggsave(filename = paste(filename, ".png", sep = ""), width = 3.5, height = 3.5, units = "in")
+setwd(dir.Figures)
+ggsave(filename = paste(filename, ".pdf", sep = ""), device = cairo_pdf, width = 3.5, height = 3.5, units = "in")
+```

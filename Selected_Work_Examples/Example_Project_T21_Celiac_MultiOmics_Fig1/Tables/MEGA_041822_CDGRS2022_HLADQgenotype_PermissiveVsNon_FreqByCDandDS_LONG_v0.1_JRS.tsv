@@ -1,0 +1,9 @@
+Group	HLA-DQ genotype category	Frequency (%)
+-DS -CD	Non-permissive	44
++DS -CD	Non-permissive	43.8
+-DS +CD	Non-permissive	3.1
++DS +CD	Non-permissive	10.5
+-DS -CD	Permissive	55.9
++DS -CD	Permissive	56.2
+-DS +CD	Permissive	97
++DS +CD	Permissive	89.5

@@ -1,0 +1,1267 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+#### FOLLOW-UP: Add intro section
+
+#### Load frequently used packages
+```{r}
+#library(dtplyr)
+library(data.table)
+library(tidyverse)
+library(skimr)
+library(openxlsx)
+library(ggrepel)
+library(dplyr)
+library(tidyr)
+library(data.table)
+library(broom)
+library(broomExtra)
+library(tibble)
+library(sjstats)
+library(car)
+#library(lme4)
+#library(lmerTest)
+library(ggplot2)
+library(tibble)
+library(modelr)
+library(tidyverse)
+#library(miceadds)
+library(ggforce)
+require(openxlsx)
+library(tidyverse)
+library(caret)
+#library(glmnet)
+library(ggplot2)
+library(gridExtra)
+library(MASS) # rlm
+library(lmPerm)
+library(circlize)
+library(RColorBrewer)
+library(ComplexHeatmap)
+
+select <- dplyr::select
+filter <- dplyr::filter
+`%notin%` <- Negate(`%in%`)
+```
+
+#### Print session info for reproducibility
+```{r}
+save.SessionInfo <- sessionInfo()
+save.SessionInfo
+```
+
+#### Store In and Out directory locations to R objects
+```{r}
+#setwd('/Users/shawjes/Dropbox/EspinosaGroup/DATA_MAIN/MEGA/Imputation_Ref1000G3v5/Out/Imputation_Results_CLEAN')
+dir.ImputationResultsRAW <- "/Users/shawjes/Dropbox/EspinosaGroup/DATA_MAIN/MEGA/Imputation_Ref1000G3v5/Out/Imputation_Results/Results"
+dir.ImputationResultsCLEAN <- "/Users/shawjes/Dropbox/EspinosaGroup/DATA_MAIN/MEGA/Imputation_Ref1000G3v5/Out/Imputation_Results_CLEAN"
+dir.ImputationResults.QCstats <- "/Users/shawjes/Dropbox/EspinosaGroup/DATA_MAIN/MEGA/Imputation_Ref1000G3v5/Out/Imputation_Results/QC_Statistics"
+dir.Data <- "/Users/shawjes/Dropbox/EspinosaGroup/ANALYSIS/Celiac_MultiOmics/GRS/DSMIG_Shared/Manuscript_Figure1/Data"
+dir.Plots <- "/Users/shawjes/Dropbox/EspinosaGroup/ANALYSIS/Celiac_MultiOmics/GRS/DSMIG_Shared/Manuscript_Figure1/Plots"
+dir.GRSoriginal.Anno <- "/Users/shawjes/Dropbox/EspinosaGroup/ANALYSIS/Celiac_MultiOmics/GRS/DSMIG_Shared/Manuscript_Figure1/Annotation/GRSoriginal"
+dir.GRSrevised.Anno <- "/Users/shawjes/Dropbox/EspinosaGroup/ANALYSIS/Celiac_MultiOmics/GRS/DSMIG_Shared/Manuscript_Figure1/Annotation/GRSrevised"
+```
+
+#### Copy the imputed VCF and index file to the manuscript data directory
+```{bash}
+#cd '/Users/shawjes/Dropbox/EspinosaGroup/DATA_MAIN/MEGA/Imputation_Ref1000G3v5/Out/Imputation_Results_CLEAN'
+#cp -a 'MEGA_041122_Espinosa08132019QCpass_IMPUTEDwithPhasing_ref1000G3v5_autosomesNoChr21_v0.1_JRS.vcf.gz' '/Users/shawjes/Dropbox/EspinosaGroup/ANALYSIS/Celiac_MultiOmics/GRS/DSMIG_Shared/Manuscript_Figure1/Data/'
+
+#cp -a 'MEGA_041122_Espinosa08132019QCpass_IMPUTEDwithPhasing_ref1000G3v5_autosomesNoChr21_v0.1_JRS.vcf.gz.csi' '/Users/shawjes/Dropbox/EspinosaGroup/ANALYSIS/Celiac_MultiOmics/GRS/DSMIG_Shared/Manuscript_Figure1/Data/'
+
+#cp -a 'autosomesNoChr21.info.gz' '/Users/shawjes/Dropbox/EspinosaGroup/ANALYSIS/Celiac_MultiOmics/GRS/DSMIG_Shared/Manuscript_Figure1/Data/'
+```
+
+#### View the VCF header and the start of the VCF data section
+```{bash}
+cd '/Users/shawjes/Dropbox/EspinosaGroup/ANALYSIS/Celiac_MultiOmics/GRS/DSMIG_Shared/Manuscript_Figure1/Data/'
+zcat < 'MEGA_041122_Espinosa08132019QCpass_IMPUTEDwithPhasing_ref1000G3v5_autosomesNoChr21_v0.1_JRS.vcf.gz' | head -n 44
+```
+
+#### Read in Sharp et al., 2019 supplemental tables and organize a list of SNPs in the originally-published GRS
+```{r}
+setwd(dir.GRSoriginal.Anno)
+sharpS1 <- read.xlsx("apt15826-sup-0001-supinfo.xlsx", sheet = "Table S1", startRow = 3)
+sharpS2 <- read.xlsx("apt15826-sup-0001-supinfo.xlsx", sheet = "Table S2", startRow = 3)
+sharpS3 <- read.xlsx("apt15826-sup-0001-supinfo.xlsx", sheet = "Table S3", startRow = 3)
+
+sharpS1
+sharpS2
+sharpS3
+
+rsIDs.GRSorig <- rbind(
+  c(sharpS1$SNP1, sharpS1$SNP2) %>% as.data.frame() %>% `colnames<-`("GRS_rsID"),
+  sharpS3 %>% select(SNP) %>% rename(GRS_rsID = SNP) )
+
+rsIDs.GRSorig
+```
+
+#### Download the documentation provided for the revised CD GRS
+https://github.com/sethsh7/hla-prs-toolkit
+```{bash}
+# Raw link: https://raw.github.com/<username>/<repo>/<branch>/Excelfile.xlsx
+
+#cd '/Users/shawjes/Dropbox/EspinosaGroup/ANALYSIS/Celiac_MultiOmics/GRS/DSMIG_Shared/Manuscript_Figure1/Annotation/GRSrevised'
+#wget https://github.com/sethsh7/hla-prs-toolkit/raw/main/Tools/Snplists/CD_GRS42/CD_GRS42_1000G_nopalin_pos_hg19.xlsx
+
+#wget https://github.com/sethsh7/hla-prs-toolkit/raw/main/Tools/Snplists/CD_GRS42/mapping_1000G.txt
+
+#wget https://github.com/sethsh7/hla-prs-toolkit/raw/main/Tools/Snplists/CD_GRS42/mapping_HRC_TOPMED.txt
+
+#wget https://github.com/sethsh7/hla-prs-toolkit/raw/main/Tools/Snplists/CD_GRS42/scorefile.txt
+```
+
+#### Read in workbook of annotation for SNPs in the revised GRS (2022) and prepare a dataframe of the SNP rsIDs, chromosome and base-pair locations
+```{r}
+setwd(dir.GRSrevised.Anno)
+GRS.revised <- read.xlsx("CD_GRS42_1000G_nopalin_pos_hg19.xlsx")
+
+GRS.revised
+
+rsIDs.GRSrevised <- GRS.revised %>%
+  select(RSID, POSITION_DBSNP151) %>%
+  rename(GRS_rsID = RSID) %>%
+  separate(POSITION_DBSNP151, into = c("CHR", "BP"), sep = ":", extra = "merge", remove = TRUE)
+
+rsIDs.GRSrevised
+```
+
+#### Output a list for each version of the GRS to input to the UCSC Table Browser
+https://genome.ucsc.edu/cgi-bin/hgTables
+```{r}
+rsIDlist.GRSorig <- rsIDs.GRSorig %>% select(GRS_rsID)
+rsIDlist.GRSrevised <- rsIDs.GRSrevised %>% select(GRS_rsID)
+
+rsIDlist.GRSorig
+rsIDlist.GRSrevised
+
+setwd(dir.Data)
+fwrite(rsIDlist.GRSorig, "MEGA_041822_GRSoriginal_rsID_list_v0.1_JRS.txt",
+       sep = "\t", quote = FALSE, col.names = FALSE, row.names = FALSE)
+fwrite(rsIDlist.GRSrevised, "MEGA_041822_GRSrevised_rsID_list_v0.1_JRS.txt",
+       sep = "\t", quote = FALSE, col.names = FALSE, row.names = FALSE)
+```
+
+##### Upload the files produced above to the Hg Tables site (https://genome.ucsc.edu/cgi-bin/hgTables), download the results, then move them into the manuscript data folder
+```{bash}
+#cp -a '/Users/shawjes/Downloads/MEGA_041822_Annotation_GRh37_GRSoriginal_rsID_list_v0.1_JRS.csv' '/Users/shawjes/Dropbox/EspinosaGroup/ANALYSIS/Celiac_MultiOmics/GRS/DSMIG_Shared/Manuscript_Figure1/Annotation/GRSoriginal'
+
+#cp -a '/Users/shawjes/Downloads/MEGA_041822_Annotation_GRh37_GRSrevised_rsID_list_v0.1_JRS.csv' '/Users/shawjes/Dropbox/EspinosaGroup/ANALYSIS/Celiac_MultiOmics/GRS/DSMIG_Shared/Manuscript_Figure1/Annotation/GRSrevised'
+```
+
+#### Remove the # in the first column name of the downloaded annotation data
+https://stackoverflow.com/questions/32004950/how-to-replace-string-in-a-file-in-place-using-sed
+```{bash}
+#cd '/Users/shawjes/Dropbox/EspinosaGroup/ANALYSIS/Celiac_MultiOmics/GRS/DSMIG_Shared/Manuscript_Figure1/Annotation/GRSoriginal'
+#sed -i '' 's/\#//g' 'MEGA_041822_Annotation_GRh37_GRSoriginal_rsID_list_v0.1_JRS.csv'
+
+#cd '/Users/shawjes/Dropbox/EspinosaGroup/ANALYSIS/Celiac_MultiOmics/GRS/DSMIG_Shared/Manuscript_Figure1/Annotation/GRSrevised'
+#sed -i '' 's/\#//g' 'MEGA_041822_Annotation_GRh37_GRSrevised_rsID_list_v0.1_JRS.csv'
+```
+
+#### Read in the annotation data collected via the UCSC Table Browser and prepare files for use with BCFtools --regions
+```{r}
+setwd(dir.GRSoriginal.Anno)
+GRCh37.GRSorig <- fread("MEGA_041822_Annotation_GRh37_GRSoriginal_rsID_list_v0.1_JRS.csv") %>%
+  rename(GRS_rsID = name, Chr = chrom, BP = chromEnd) %>%
+  select(GRS_rsID, Chr, BP) %>%  # Note: I have previously determined that the coordinates in the MEGA *.bim file match up with the chromEnd column exported from the Table Browser, at least for the SNPs in this GRS.
+  filter(grepl("_", Chr)==FALSE) %>% # Note: I have previously determined that we do not need to consider the alternative mappings for the HLA region SNPs (e.g., 'chr6_ssto_hap7' or 'chr6_qbl_hap6'), so we will exclude those rows from the dataframe
+  mutate(Chr = gsub("chr", "", Chr) %>% as.numeric())
+
+setwd(dir.GRSrevised.Anno)
+GRCh37.GRSrevised <- fread("MEGA_041822_Annotation_GRh37_GRSrevised_rsID_list_v0.1_JRS.csv") %>%
+  rename(GRS_rsID = name, Chr = chrom, BP = chromEnd) %>%
+  select(GRS_rsID, Chr, BP) %>%  # Note: I have previously determined that the coordinates in the MEGA *.bim file match up with the chromEnd column exported from the Table Browser, at least for the SNPs in this GRS.
+  filter(grepl("_", Chr)==FALSE) %>% # Note: I have previously determined that we do not need to consider the alternative mappings for the HLA region SNPs (e.g., 'chr6_ssto_hap7' or 'chr6_qbl_hap6'), so we will exclude those rows from the dataframe
+  mutate(Chr = gsub("chr", "", Chr) %>% as.numeric())
+
+GRCh37.GRSorig
+GRCh37.GRSrevised
+```
+
+#### Verify the mapping of the SNPs in the annotation provided for the revised GRS
+```{r}
+setwd(dir.GRSrevised.Anno)
+anno.revisedGRS <- read.xlsx("CD_GRS42_1000G_nopalin_pos_hg19.xlsx")
+
+anno.revisedGRS %>%
+  select(RSID, POSITION_DBSNP151) %>%
+  separate(POSITION_DBSNP151, into = c("Chr", "BP"), sep = ":") %>%
+  rename(GRS_rsID = RSID) %>%
+  full_join(GRCh37.GRSrevised, by = "GRS_rsID") %>%
+  filter(Chr.x != Chr.y | BP.x != BP.y)
+# 0 rows = all good.
+```
+
+#### Create a dataframe of the locations of the SNPs in the original GRS and the revised GRS
+```{r}
+to_extract <- rbind(GRCh37.GRSorig %>%
+                      mutate(GRS_version = "Original"),
+                    GRCh37.GRSrevised %>%
+                      mutate(GRS_version = "Revised")) %>%
+  mutate(CHR_BP = paste(Chr, BP, sep = ":")) %>%
+  arrange(CHR_BP) %>%
+  mutate(Indicator = 1) %>%
+  spread(key = GRS_version, value = Indicator) %>%
+  rename(In_Original_GRS = Original,
+         In_Revised_GRS = Revised) %>%
+  mutate(In_Original_GRS = ifelse(is.na(In_Original_GRS), 0, In_Original_GRS),
+         In_Revised_GRS = ifelse(is.na(In_Revised_GRS), 0, In_Revised_GRS))
+
+to_extract
+```
+
+#### FOLLOW UP
+#### Compare the mapping of the original GRS SNPs to their replacement SNPs to assess if the putative gene is likely the same
+Follow-up email to Sharp team to confirm that putative genes are assumed to still be the same in the revised GRS (this will impact Neetha's multi-omics figures)
+```{r}
+
+# FOLLOW-UP
+# Use this to determine how far apart the original vs. replacement SNPs are from one another.
+
+to_extract
+
+```
+
+#### Get a long string of the locations of GRS SNPs separated by commas
+(View the console to copy the full string)
+```{r}
+to_extract$CHR_BP %>%
+  paste(collapse = ",")
+```
+
+#### Use bcftools view with the string produced above to extract the GRS SNPs from the imputed MEGA data
+```{bash}
+# https://samtools.github.io/bcftools/bcftools.html
+# bcftools -r, --regions chr|chr:pos|chr:from-to|chr:from-[,…​]
+
+cd '/Users/shawjes/Dropbox/EspinosaGroup/ANALYSIS/Celiac_MultiOmics/GRS/DSMIG_Shared/Manuscript_Figure1/Data'
+bcftools view \
+--regions \
+2:68645560,2:182007800,6:32627713,6:408079,1:200881392,11:118579865,1:172862984,14:69259502,18:12843137,1:172681031,1:172864652,10:81058027,2:61186829,4:123551114,1:192541021,3:159623559,1:192541472,15:75096443,6:29828916,6:32673893,6:138005515,6:159469574,21:43855067,2:204610396,3:188119901,6:32605884,6:33034596,10:6390192,3:159674928,6:33074288,12:111884608,6:32681530,6:31348365,1:2539400,22:21979289,6:128293562,3:119123278,11:128391937,16:10964118,2:191913034,6:33079812,11:111196858,6:32603374,3:46205686,6:32658079,6:32620628,6:32671412,10:6390450,2:103086770 \
+'MEGA_041122_Espinosa08132019QCpass_IMPUTEDwithPhasing_ref1000G3v5_autosomesNoChr21_v0.1_JRS.vcf.gz' \
+--output 'MEGA_041822_Extracted_from_ImputedRef1000G3v5_NoChr21_v0.1_JRS.vcf.gz'
+```
+
+#### Preview the new VCF of extracted GRS SNPs
+```{bash}
+cd '/Users/shawjes/Dropbox/EspinosaGroup/ANALYSIS/Celiac_MultiOmics/GRS/DSMIG_Shared/Manuscript_Figure1/Data'
+zcat < 'MEGA_041822_Extracted_from_ImputedRef1000G3v5_NoChr21_v0.1_JRS.vcf.gz' | head -n 46
+```
+
+#### From the VCF produced above, make a Plink binary fileset, a Plink raw file of allelic dosages, and a Plink traw file of allelic dosages
+```{bash}
+# Note: Use --const-fid to make output use only the MEGA IID. We will use FamilyID as defined in HTP clinical data instead of the arbitrary FIDs shown in the MEGA data.
+
+cd '/Users/shawjes/Dropbox/EspinosaGroup/ANALYSIS/Celiac_MultiOmics/GRS/DSMIG_Shared/Manuscript_Figure1/Data'
+plink2 --vcf 'MEGA_041822_Extracted_from_ImputedRef1000G3v5_NoChr21_v0.1_JRS.vcf.gz' \
+--const-fid \
+--make-bed \
+--out 'MEGA_041822_Extracted_from_ImputedRef1000G3v5_NoChr21_v0.1_JRS'
+
+plink2 --vcf 'MEGA_041822_Extracted_from_ImputedRef1000G3v5_NoChr21_v0.1_JRS.vcf.gz' \
+--const-fid \
+--export A-transpose \
+--out 'MEGA_041822_Extracted_from_ImputedRef1000G3v5_NoChr21_v0.1_JRS'
+```
+
+#### Read in the Plink *.traw file produced above and join it with the dataframe of SNP locations used to extract these variants
+```{r}
+setwd("/Users/shawjes/Dropbox/EspinosaGroup/ANALYSIS/Celiac_MultiOmics/GRS/DSMIG_Shared/Manuscript_Figure1/Data")
+imputed.traw <- fread("MEGA_041822_Extracted_from_ImputedRef1000G3v5_NoChr21_v0.1_JRS.traw") %>%
+  gather(key = "IID", value = "Dosage", contains("DNA")) %>%
+  filter(grepl("HTP", IID)==TRUE) %>%
+  select(-c(`(C)M`)) %>%
+  rename(Dosage.COUNTED = Dosage) %>%
+  mutate(Extracted = 1) %>%
+  full_join(to_extract %>% rename(CHR_POS = CHR_BP), by = c("CHR"="Chr", "POS"="BP")) %>%
+  mutate(Extracted = ifelse(is.na(Extracted), 0, Extracted)) %>%
+  filter(In_Original_GRS == 1 | In_Revised_GRS == 1)
+
+imputed.traw
+```
+
+#### Of the 45 SNPs we tried to extract, how many did we get?
+```{r}
+inventory <- imputed.traw %>%
+  select(-c(IID, Dosage.COUNTED)) %>%
+  unique() %>%
+  select(GRS_rsID, CHR, POS, CHR_POS, In_Original_GRS, In_Revised_GRS, everything())
+
+inventory
+
+inventory %>% filter(Extracted == 0)
+
+inventory %>%
+  filter(In_Original_GRS == 1) %>%
+  group_by(CHR, In_Original_GRS, Extracted) %>%
+  summarise(N = n())
+  
+inventory %>%
+  filter(In_Revised_GRS == 1) %>%
+  group_by(CHR, In_Revised_GRS, Extracted) %>%
+  summarise(N = n())
+
+print("Perfect, we got all of the SNPs except for the one located on Chromosome 21, which we purposely excluded from imputation and will deal with later.")
+```
+
+
+#### Clean up the traw dataframe a bit
+```{r}
+imputed.traw01 <- imputed.traw %>%
+  select(-c(CHR_POS)) %>%
+  rename(VCF_VariantID = SNP) %>%
+  select(IID, VCF_VariantID, COUNTED, ALT, Dosage.COUNTED, In_Original_GRS, In_Revised_GRS, Extracted, everything())
+
+rm(imputed.traw)
+
+imputed.traw01
+```
+
+#### Verify that we got back only one unique SNP for each CHR:BP extracted from the imputed dataset
+```{r}
+imputed.traw01 %>%
+  select(-c(IID, Dosage.COUNTED)) %>%
+  unique() %>%
+  mutate(CHR_POS = paste(CHR, POS, sep = ":")) %>%
+  select(CHR_POS, VCF_VariantID) %>%
+  unique() %>%
+  group_by(CHR_POS)  %>%
+  summarise(N_SNPs_at_ChrBP = n()) %>%
+  arrange(desc(N_SNPs_at_ChrBP))
+
+# Great.
+```
+
+#### Extract imputation quality info using bcftools
+```{bash}
+# Print chromosome, position, ref allele and the first alternate allele
+
+#cd '/Users/shawjes/Dropbox/EspinosaGroup/ANALYSIS/Celiac_MultiOmics/GRS/DSMIG_Shared/Manuscript_Figure1/Data'
+#bcftools query -f '%CHROM  %POS  %REF  %ALT{0} %INFO\n' 'MEGA_041822_Extracted_from_ImputedRef1000G3v5_NoChr21_v0.1_JRS.vcf.gz' > 'MEGA_041822_QualityINFO_Extracted_from_ImputedRef1000G3v5_NoChr21_v0.1_JRS.txt'
+
+#cat 'MEGA_041822_QualityINFO_Extracted_from_ImputedRef1000G3v5_NoChr21_v0.1_JRS.txt'
+```
+
+#### Clean the extracted VCF INFO field
+```{r}
+setwd(dir.Data)
+extracted.INFO <- fread("MEGA_041822_QualityINFO_Extracted_from_ImputedRef1000G3v5_NoChr21_v0.1_JRS.txt") %>%
+  `colnames<-`(c("CHR", "POS", "REF", "ALT", "INFO")) %>%
+  separate(INFO, into = c("AF", "MAF", "R2", "temp1", "temp2"), sep = ";", extra = "merge", remove = FALSE) %>%
+  mutate(ER2 = ifelse(grepl("ER2", temp1)==TRUE, temp1, NA),
+         Type = ifelse(grepl("ER2", temp1)==FALSE, temp1, temp2)) %>%
+  select(-c(temp1, temp2)) %>%
+  mutate(AF = gsub("AF=", "", AF),
+         MAF = gsub("MAF=", "", MAF),
+         R2 = gsub("R2=", "", R2),
+         ER2 = gsub("ER2=", "", ER2))
+
+extracted.INFO
+```
+
+#### Clean up the VCF INFO dataframe, split it by GRS version, and output to annotation files
+```{r}
+imputationQCinfo <- extracted.INFO %>%
+  full_join(inventory, by = intersect(colnames(extracted.INFO), colnames(inventory)))
+
+#imputationQCinfo
+
+imputationQCinfo.GRSorig <- imputationQCinfo %>%
+  rename(VCF_VariantID = SNP) %>%
+  filter(In_Original_GRS == 1) %>%
+  select(-c(In_Original_GRS, In_Revised_GRS)) %>%
+  mutate(GRS_version = "Sharp et al., 2019") %>%
+  select(GRS_version, GRS_rsID, VCF_VariantID, CHR, POS, REF, ALT, COUNTED, everything()) %>%
+  select(-c(CHR_POS)) %>%
+  rename(COUNTED_in_traw = COUNTED) %>%
+  mutate(Build = "GRCh37")
+
+imputationQCinfo.GRSrevised <- imputationQCinfo %>%
+  rename(VCF_VariantID = SNP) %>%
+  filter(In_Revised_GRS == 1) %>%
+  select(-c(In_Original_GRS, In_Revised_GRS)) %>%
+  mutate(GRS_version = "Sharp et al., 2022") %>%
+  select(GRS_version, GRS_rsID, VCF_VariantID, CHR, POS, REF, ALT, COUNTED, everything()) %>%
+  select(-c(CHR_POS)) %>%
+  rename(COUNTED_in_traw = COUNTED) %>%
+  mutate(Build = "GRCh37")
+
+imputationQCinfo.GRSorig
+imputationQCinfo.GRSrevised
+
+setwd(dir.GRSoriginal.Anno)
+fwrite(imputationQCinfo.GRSorig, "MEGA_041822_CD_GRS_Sharp2019_ImputationQCinfo_GRCh37_v0.1_JRS.csv")
+
+setwd(dir.GRSrevised.Anno)
+fwrite(imputationQCinfo.GRSrevised, "MEGA_041822_CD_GRS_Sharp2022_ImputationQCinfo_GRCh37_v0.1_JRS.csv")
+```
+
+```{r}
+# imputationQCinfo.GRSorig
+# imputed.traw01
+
+imputed.traw.GRSorig <- imputationQCinfo.GRSorig %>%
+  rename(COUNTED = COUNTED_in_traw) %>%
+  left_join(imputed.traw01,
+            by = intersect(colnames(imputationQCinfo.GRSorig %>% rename(COUNTED = COUNTED_in_traw)),
+                           colnames(imputed.traw01))) %>%
+  select(-c(Extracted, In_Original_GRS, In_Revised_GRS)) %>%
+  select(GRS_version,
+         GRS_rsID,
+         VCF_VariantID, IID, COUNTED, Dosage.COUNTED, 
+         CHR, POS, REF, ALT, INFO, AF, MAF, R2, ER2, Type,
+         everything()) %>%
+  mutate(temp = gsub("_WG", "_|WG", IID)) %>%
+  separate(temp, into = c("rm", "MEGA.IID"), sep = "[|]", extra = "merge", remove = FALSE) %>%
+  select(-c(IID, temp, rm)) %>%
+  select(GRS_version, MEGA.IID, GRS_rsID, VCF_VariantID,
+         COUNTED, Dosage.COUNTED, everything()) %>%
+  unique()
+
+imputed.traw.GRSrevised <- imputationQCinfo.GRSrevised %>%
+  rename(COUNTED = COUNTED_in_traw) %>%
+  left_join(imputed.traw01,
+            by = intersect(colnames(imputationQCinfo.GRSrevised %>% rename(COUNTED = COUNTED_in_traw)),
+                           colnames(imputed.traw01))) %>%
+  select(-c(Extracted, In_Original_GRS, In_Revised_GRS)) %>%
+  select(GRS_version,
+         GRS_rsID,
+         VCF_VariantID, IID, COUNTED, Dosage.COUNTED, 
+         CHR, POS, REF, ALT, INFO, AF, MAF, R2, ER2, Type,
+         everything()) %>%
+  mutate(temp = gsub("_WG", "_|WG", IID)) %>%
+  separate(temp, into = c("rm", "MEGA.IID"), sep = "[|]", extra = "merge", remove = FALSE) %>%
+  select(-c(IID, temp, rm)) %>%
+  select(GRS_version, MEGA.IID, GRS_rsID, VCF_VariantID,
+         COUNTED, Dosage.COUNTED, everything()) %>%
+  unique()
+
+imputed.traw.GRSorig
+imputed.traw.GRSrevised
+```
+
+#### Add HTP study identifiers (FamilyID, RecordID, LabID)
+```{r}
+# MEGA.IDkey
+# imputed.traw.GRSorig
+# imputed.traw.GRSrevised
+
+setwd(dir.Data)
+MEGA.IDkey <- fread("MEGA_041822_MEGA2_to_HTP_ID_key_v0.1_JRS.csv") %>%
+  filter(HTP_participant == "Yes") %>%
+  select(FamilyID, RecordID, MEGA.FID, MEGA.IID, MEGA.LabID) %>%
+  unique()
+
+imputed.traw.GRSorig01 <- imputed.traw.GRSorig %>%
+  full_join(MEGA.IDkey, by = "MEGA.IID") %>%
+  select(FamilyID, RecordID, MEGA.FID, MEGA.IID, MEGA.LabID, GRS_rsID, COUNTED, Dosage.COUNTED, everything()) %>%
+  unique()
+
+imputed.traw.GRSrevised01 <- imputed.traw.GRSrevised %>%
+  full_join(MEGA.IDkey, by = "MEGA.IID") %>%
+  select(FamilyID, RecordID, MEGA.FID, MEGA.IID, MEGA.LabID, GRS_rsID, COUNTED, Dosage.COUNTED, everything()) %>%
+  unique()
+
+imputed.traw.GRSorig01
+imputed.traw.GRSrevised01
+```
+
+#### Produce a summary of how far apart the ambiguous SNPs used in GRS 2019 are from their replacements used in the GRS 2022
+```{r}
+deltaChrPos_replacedSNPs <- anno.revisedGRS %>%
+  filter(!is.na(REPLACING)) %>%
+  filter(COMPONENT == "Non-HLA") %>%
+  rename(GRS_Component = COMPONENT,
+         Score_Allele.revised = SCORE_ALLELE,
+         `Score_Weight.revised` = SCORE,
+         Strand.revised = STRAND) %>%
+  rename(GRS_rsID.revised = RSID,
+         GRS_rsID.original = REPLACING) %>%
+  select(-c(`Freq_UKB(A1)`, `Freq_UKB(A2)`, `1000G?`,
+            A1, A2)) %>%
+  select(GRS_Component, GRS_rsID.revised, GRS_rsID.original, Score_Allele.revised, Score_Weight.revised, POSITION_DBSNP151) %>%
+  separate(POSITION_DBSNP151, into = c("Chr_rsID.revised", "Pos_rsID.revised"), sep = ":", extra = "merge", remove = TRUE) %>%
+  left_join(GRCh37.GRSorig %>%
+              rename(GRS_rsID.original = GRS_rsID,
+                     Chr_rsID.original = Chr,
+                     Pos_rsID.original = BP),
+            by = "GRS_rsID.original") %>%
+  left_join(sharpS3 %>%
+              select(Putative.Gene, SNP, Allele, `Weight.(β)`) %>%
+              rename(Putative_Gene.original = Putative.Gene, GRS_rsID.original = SNP, Score_Allele.original = Allele, Score_Weight.original = `Weight.(β)`),
+            by = "GRS_rsID.original") %>%
+  select(GRS_Component,
+         GRS_rsID.original, Score_Allele.original, Score_Weight.original, Chr_rsID.original, Pos_rsID.original,
+         GRS_rsID.revised, Score_Allele.revised, Score_Weight.revised, Chr_rsID.revised, Pos_rsID.revised,
+         everything()) %>%
+  mutate(Chr_rsID.original = as.numeric(Chr_rsID.original),
+         Chr_rsID.revised = as.numeric(Chr_rsID.revised),
+         Pos_rsID.original = as.numeric(Pos_rsID.original),
+         Pos_rsID.revised = as.numeric(Pos_rsID.revised)) %>%
+  mutate(delta.Chr = Chr_rsID.revised - Chr_rsID.original,
+         delta.Pos = Pos_rsID.revised - Pos_rsID.original) %>%
+  select(GRS_rsID.original, GRS_rsID.revised, delta.Chr, delta.Pos, everything()) %>%
+  select(GRS_rsID.original, GRS_rsID.revised, Chr_rsID.original, Pos_rsID.original, Chr_rsID.revised, Pos_rsID.revised, delta.Chr, delta.Pos)
+
+deltaChrPos_replacedSNPs
+
+setwd(dir.GRSrevised.Anno)
+fwrite(deltaChrPos_replacedSNPs, "MEGA_041822_DeltaChrPos_GRS_rsID_original_vs_replacement_v0.1_JRS.csv")
+```
+
+```{bash}
+#cd '/Users/shawjes/Dropbox/EspinosaGroup/ANALYSIS/Celiac_MultiOmics/GRS/DSMIG_Shared/Manuscript_Figure1/Data'
+#wget 'https://analysistools.cancer.gov/LDlink/tmp/LDpair_0418388542.txt'
+#mv 'LDpair_0418388542.txt' 'LDpair_rs1359062_rs1323292.txt'
+```
+
+```{bash}
+#cd '/Users/shawjes/Dropbox/EspinosaGroup/ANALYSIS/Celiac_MultiOmics/GRS/DSMIG_Shared/Manuscript_Figure1/Data'
+#wget 'https://analysistools.cancer.gov/LDlink/tmp/LDpair_0438167674.txt'
+#mv 'LDpair_0438167674.txt' 'LDpair_rs12142280_rs11801183.txt'
+```
+
+```{bash}
+# rs2387397	rs947474
+#cd '/Users/shawjes/Dropbox/EspinosaGroup/ANALYSIS/Celiac_MultiOmics/GRS/DSMIG_Shared/Manuscript_Figure1/Data'
+#wget 'https://analysistools.cancer.gov/LDlink/tmp/LDpair_0439208571.txt'
+#mv 'LDpair_0439208571.txt' 'LDpair_rs2387397_rs947474.txt'
+```
+
+```{r}
+# "LDpair_rs12142280_rs11801183.txt" "LDpair_rs1359062_rs1323292.txt"   "LDpair_rs2387397_rs947474.txt"
+
+setwd(dir.Data)
+data.LDpairs <- list.files(pattern = "LDpair") %>%
+  lapply(fread, fill = TRUE)
+
+data.LDpairs
+
+temp <- list()
+for ( i in 1:length(data.LDpairs) ){
+  temp[[i]] <- data.LDpairs[[i]] %>% select(V1, V2) %>% filter(V1 == "D':" | V1 == "R2:" | V1 == "Chi-sq:" | V1 == "p-value:") %>%
+    mutate(dummy = 1,
+           V1 = gsub(":", "", V1),
+           Population = data.LDpairs[[i]]$V1[5]) %>%
+    spread(key = V1, value = V2) %>%
+    select(-dummy) %>%
+    cbind(.,
+          data.LDpairs[[i]] %>%
+            filter(grepl("rs", V1)==TRUE) %>%
+            select(V1) %>%
+            unique() %>%
+            filter(grepl("[(]", V1)==FALSE) %>%
+            t() %>%
+            as.data.frame() %>%
+            rename(SNP1 = V1, SNP2 = V2)) %>%
+    # cbind(.,
+    #       data.LDpairs[[i]] %>%
+    #         filter(grepl("_", V1)==TRUE) %>%
+    #         select(V1, V3) %>%
+    #         unique() %>%
+    #         rename(SNP1allele_SNP2allele = V1,
+    #                Correlation = V3)) %>%
+    #mutate(SNP1allele_SNP2allele = gsub("[:]", "", V1)) %>%
+    #separate(SNP1allele_SNP2allele, into = c("SNP1_Allele", "SNP2_Allele"), sep = "_", extra = "merge", remove = TRUE) %>%
+    select(Population, SNP1, SNP2,
+           `D'`, R2, `Chi-sq`, `p-value`,
+           #SNP1_Allele, SNP2_Allele,
+           everything()) %>%
+    rename(GRS_rsID.original = SNP1,
+           GRS_rsID.revised = SNP2)
+  #mutate(Correlation = gsub("[(]", "", Correlation),
+  #       Correlation = gsub("[)]", "", Correlation))
+}
+
+LDstats <- temp %>% rbindlist()
+
+LDstats
+
+setwd(dir.GRSrevised.Anno)
+fwrite(LDstats, "MEGA_041822_LD_GRS_rsID_original_vs_replacement_v0.1_JRS.csv")
+
+#setwd(dir.GRSrevised.Anno)
+#LDstats <- fread("MEGA_041822_LD_GRS_rsID_original_vs_replacement_v0.1_JRS.csv")
+#LDstats
+```
+
+#### Verify that both dosage dataframes contain the same number of unique IIDs
+```{r}
+imputed.traw.GRSorig01 %>%
+  select(MEGA.IID) %>%
+  unique() %>%
+  nrow()
+
+imputed.traw.GRSrevised01 %>%
+  select(MEGA.IID) %>%
+  unique() %>%
+  nrow()
+```
+
+#### Create a dataframe that maps the rsIDs in the revised GRS to the corresponding Putative Gene reported in the Sharp 2019 paper, and to the 'COMPONENT' column in the annotation for the revised GRS
+```{r}
+GRSrevised_map_PutativeGenes2019 <- anno.revisedGRS %>%
+  select(COMPONENT, RSID, REPLACING) %>%
+  unique() %>%
+  filter(RSID %in% sharpS3$SNP |
+           REPLACING %in% sharpS3$SNP) %>%
+  left_join(sharpS3, by = c("RSID" = "SNP")) %>%
+  left_join(sharpS3, by = c("REPLACING" = "SNP")) %>%
+  mutate(`Putative Gene (Sharp 2019)` = ifelse(is.na(Putative.Gene.x) & !is.na(Putative.Gene.y), Putative.Gene.y,
+                                               ifelse(is.na(Putative.Gene.y) & !is.na(Putative.Gene.x), Putative.Gene.x, NA))) %>%
+  rename(`GRS Component (Sharp 2022)` = COMPONENT) %>%
+  select(`GRS Component (Sharp 2022)`, `Putative Gene (Sharp 2019)`, RSID, REPLACING) %>%
+  unique() %>%
+  rename(`Variant (Sharp 2022)` = RSID,
+         `Variant (Sharp 2019)` = REPLACING) %>%
+  mutate(`Variant (Sharp 2019)` = ifelse(is.na(`Variant (Sharp 2019)`), `Variant (Sharp 2022)`, `Variant (Sharp 2019)`)) %>%
+  mutate(Replaced_Variant = ifelse(`Variant (Sharp 2019)` != `Variant (Sharp 2022)`, "Yes", "No")) %>%
+  mutate(`GRS Component (Sharp 2019)` = "Non-HLA-DQ") %>%
+  select(`Variant (Sharp 2019)`, `Variant (Sharp 2022)`, Replaced_Variant,
+          `GRS Component (Sharp 2019)`, `GRS Component (Sharp 2022)`,
+         everything())
+
+GRSrevised_map_PutativeGenes2019
+
+setwd(dir.GRSrevised.Anno)
+fwrite(GRSrevised_map_PutativeGenes2019, "MEGA_041822_GRS2022COMPONENT_to_GRS2019PutativeGene_GRS2019nonHLADQSNPsOnly_v0.1_JRS.csv")
+setwd(dir.GRSoriginal.Anno)
+fwrite(GRSrevised_map_PutativeGenes2019, "MEGA_041822_GRS2022COMPONENT_to_GRS2019PutativeGene_GRS2019nonHLADQSNPsOnly_v0.1_JRS.csv")
+```
+
+#### Produce a list of only the SNPs that are not haplotype-tagging SNPs used in either version of the GRS
+```{r}
+nonHLADQ_SNPs.GRSorig <- GRSrevised_map_PutativeGenes2019 %>%
+  filter(`GRS Component (Sharp 2019)` == "Non-HLA-DQ") %>%
+  select(`Variant (Sharp 2019)`) %>%
+  unique()
+
+nonHLADQ_SNPs.GRSrevised <- GRSrevised_map_PutativeGenes2019 %>%
+  filter(`GRS Component (Sharp 2019)` == "Non-HLA-DQ") %>%
+  select(`Variant (Sharp 2022)`) %>%
+  unique()
+
+nonHLADQ_SNPs.GRSorig
+nonHLADQ_SNPs.GRSrevised
+```
+
+#### Filter the cleaned dataframes of dosage data to keep only the SNPs that are not for tagging of HLA-DQ haplotypes, because our GRS analysis uses the HIBAG-imputed HLA alleles to infer HLA-DQ genotypes
+```{r}
+imputed.traw.GRSorig02 <- imputed.traw.GRSorig01 %>%
+  filter(GRS_rsID %in% nonHLADQ_SNPs.GRSorig$`Variant (Sharp 2019)`)
+
+imputed.traw.GRSrevised02 <- imputed.traw.GRSrevised01 %>%
+  filter(GRS_rsID %in% nonHLADQ_SNPs.GRSrevised$`Variant (Sharp 2022)`)
+
+imputed.traw.GRSorig02$GRS_rsID %>% unique() %>% length()
+imputed.traw.GRSrevised02$GRS_rsID %>% unique() %>% length()
+#[1] 38
+#[1] 38
+
+imputed.traw.GRSorig02
+imputed.traw.GRSrevised02
+
+print("We have now prepared one dataframe of non-HLA-DQ SNP dosage data for the rsIDs used in the GRS published in 2019, and one dataframe of non-HLA-DQ SNP dosage data for the rsIDs used in the revised GRS shared on github in 2022. In both cases the GRS involves a total of 38 non-HLA-DQ SNPs.")
+```
+
+#### Verify that each version of the non-HLA-DQ SNP dosage data includes the same number of individuals (MEGA.IIDs)
+```{r}
+imputed.traw.GRSorig02 %>%
+  select(MEGA.IID) %>%
+  unique() %>%
+  nrow()
+
+imputed.traw.GRSrevised02 %>%
+  select(MEGA.IID) %>%
+  unique() %>%
+  nrow()
+
+print("Non-HLA-DQ SNP dosage data for the 2019 GRS includes 222 IIDs.")
+print("Non-HLA-DQ SNP dosage data for the 2022 GRS includes 222 IIDs.")
+```
+
+```{r}
+imputed.traw.GRSorig02 %>% # nrow = 8178
+  filter(grepl("HTP", MEGA.LabID)==TRUE) %>% # nrow =  8177 %>%
+  filter(grepl("B", MEGA.LabID)==FALSE) # nrow =  8066
+
+imputed.traw.GRSrevised02 %>% # nrow = 8178
+  filter(grepl("HTP", MEGA.LabID)==TRUE) %>% # nrow =  8177 %>%
+  filter(grepl("B", MEGA.LabID)==FALSE) # nrow =  8066
+
+imputed.traw.GRSorig03 <- imputed.traw.GRSorig02 %>%
+  filter(grepl("HTP", MEGA.LabID)==TRUE & # Remove the row with no MEGA.LabID because it is a reference sample (beginning with '_NA') that is used on all Illumina arrays (i.e., it's not an HTP participant)
+           grepl("B", MEGA.LabID)==FALSE) # Remove D21s
+
+imputed.traw.GRSrevised03 <-imputed.traw.GRSrevised02 %>%
+  filter(grepl("HTP", MEGA.LabID)==TRUE & # Remove the row with no MEGA.LabID because it is a reference sample (beginning with '_NA') that is used on all Illumina arrays (i.e., it's not an HTP participant)
+           grepl("B", MEGA.LabID)==FALSE) # Remove D21s
+
+imputed.traw.GRSorig02
+imputed.traw.GRSrevised02
+imputed.traw.GRSorig03
+imputed.traw.GRSrevised03
+```
+
+#### Output SNP dosage data to files
+```{r}
+setwd(dir.Data)
+fwrite(imputed.traw.GRSorig03, "MEGA_041822_Dosage_GRS2019_ImputedRef1000G3v5_excludingChr21snp_0.1_JRS.csv")
+fwrite(imputed.traw.GRSorig03, "MEGA_041822_Dosage_GRS2019_ImputedRef1000G3v5_excludingChr21snp_0.1_JRS.tsv", sep = "\t")
+
+setwd(dir.Data)
+fwrite(imputed.traw.GRSrevised03, "MEGA_041822_Dosage_GRS2022_ImputedRef1000G3v5_excludingChr21snp_0.1_JRS.csv")
+fwrite(imputed.traw.GRSrevised03, "MEGA_041822_Dosage_GRS2022_ImputedRef1000G3v5_excludingChr21snp_0.1_JRS.tsv")
+```
+
+
+# ARCHIVE (NOT RUN)
+
+
+#### Create a combined info file
+```{bash}
+cd '/Users/shawjes/Dropbox/EspinosaGroup/DATA_MAIN/MEGA/Imputation_Ref1000G3v5/Out/Imputation_Results/Results'
+cat *.info.gz >> '/Users/shawjes/Dropbox/EspinosaGroup/DATA_MAIN/MEGA/Imputation_Ref1000G3v5/Out/Imputation_Results_CLEAN/autosomesNoChr21.info.gz'
+```
+
+```{r}
+names(snp_list.split) #[1] "1"  "2"  "3"  "4"  "6"  "10" "11" "12" "14" "15" "16" "18" "22"
+length(snp_list.split) #[1] 13
+
+imputation.info.GRS.chr1 <- imputation.info$`1` %>% filter(SNP %in% snp_list.split$`1`$SNP)
+imputation.info.GRS.chr2 <- imputation.info$`2` %>% filter(SNP %in% snp_list.split$`2`$SNP)
+imputation.info.GRS.chr3 <- imputation.info$`3` %>% filter(SNP %in% snp_list.split$`3`$SNP)
+imputation.info.GRS.chr4 <- imputation.info$`4` %>% filter(SNP %in% snp_list.split$`4`$SNP)
+imputation.info.GRS.chr6 <- imputation.info$`6` %>% filter(SNP %in% snp_list.split$`6`$SNP)
+imputation.info.GRS.chr10 <- imputation.info$`10` %>% filter(SNP %in% snp_list.split$`10`$SNP)
+imputation.info.GRS.chr11 <- imputation.info$`11` %>% filter(SNP %in% snp_list.split$`11`$SNP)
+imputation.info.GRS.chr12 <- imputation.info$`12` %>% filter(SNP %in% snp_list.split$`12`$SNP)
+imputation.info.GRS.chr14 <- imputation.info$`14` %>% filter(SNP %in% snp_list.split$`14`$SNP)
+imputation.info.GRS.chr15 <- imputation.info$`15` %>% filter(SNP %in% snp_list.split$`15`$SNP)
+imputation.info.GRS.chr16 <- imputation.info$`16` %>% filter(SNP %in% snp_list.split$`16`$SNP)
+imputation.info.GRS.chr18 <- imputation.info$`18` %>% filter(SNP %in% snp_list.split$`18`$SNP)
+imputation.info.GRS.chr22 <- imputation.info$`22` %>% filter(SNP %in% snp_list.split$`22`$SNP)
+
+imputation.info.GRS <- list(imputation.info.GRS.chr1,
+     imputation.info.GRS.chr2,
+     imputation.info.GRS.chr3,
+     imputation.info.GRS.chr4,
+     imputation.info.GRS.chr6,
+     imputation.info.GRS.chr10,
+     imputation.info.GRS.chr11,
+     imputation.info.GRS.chr12,
+     imputation.info.GRS.chr14,
+     imputation.info.GRS.chr15,
+     imputation.info.GRS.chr16,
+     imputation.info.GRS.chr18,
+     imputation.info.GRS.chr22) %>%
+  lapply(as.data.frame) %>%
+  rbindlist() %>%
+  arrange(Rsq) %>%
+  as.data.frame()
+
+imputation.info.GRS %>% dim() #[1] 43 13
+
+imputation.info.GRS
+
+setwd(dir.Data)
+fwrite(imputation.info.GRS, "MEGA_041822_Extracted_from_ImputedRef1000G3v5_NoChr21_v0.1_JRS.info.gz")
+```
+
+
+
+
+
+```{r}
+imputed.traw02 <- imputed.traw01 %>%
+  left_join(imputationQCinfo.GRSorig, by = "CHR_POS") %>%
+  rename(`INFO.REF(0)` = `REF(0)`,
+         `INFO.ALT(1)` = `ALT(1)`,
+         INFO.ALT_Frq = ALT_Frq,
+         INFO.MAF = MAF,
+         INFO.AvgCall = AvgCall,
+         INFO.Rsq = Rsq,
+         INFO.Genotyped = Genotyped,
+         INFO.LooRsq = LooRsq,
+         INFO.EmpR = EmpR,
+         INFO.EmpRsq = EmpRsq,
+         INFO.Dose0 = Dose0,
+         INFO.Dose1 = Dose1)
+
+imputed.traw02
+```
+
+
+```{r}
+originalGRS.nonHLADQ.dosage.INFO <- imputed.traw02 %>% filter(In_Original_GRS == 1) %>%
+  select(-c(In_Original_GRS, In_Revised_GRS, Extracted)) %>%
+  select(IID, CHR, POS, SNP, COUNTED, ALT, Dosage.COUNTED, everything()) %>%
+  arrange(INFO.Rsq)
+
+revisedGRS.dosage.INFO <- imputed.traw02 %>% filter(In_Revised_GRS == 1) %>%
+  select(-c(In_Original_GRS, In_Revised_GRS, Extracted)) %>%
+  select(IID, CHR, POS, SNP, COUNTED, ALT, Dosage.COUNTED, everything()) %>%
+  arrange(INFO.Rsq)
+
+originalGRS.nonHLADQ.INFO <- originalGRS.nonHLADQ.dosage.INFO %>% select(-c(IID, Dosage.COUNTED)) %>% unique()
+revisedGRS.INFO <- revisedGRS.dosage.INFO %>% select(-c(IID, Dosage.COUNTED)) %>% unique()
+
+originalGRS.nonHLADQ.dosage.INFO
+revisedGRS.dosage.INFO
+
+originalGRS.nonHLADQ.INFO
+revisedGRS.INFO
+```
+
+#### Make a dataframe of the imputation quality statistics for the non-HLA-DQ SNPs in the originally-published GRS
+```{r}
+INFO.nonHLADQ.origGRS <- anno.nonHLADQ.origGRS %>%
+  filter(grepl("_", chrom)==FALSE) %>%
+  select(name, chrom, chromEnd) %>%
+  rename(GRS_rsID = name, CHR = chrom, POS = chromEnd) %>%
+  as.data.frame() %>%
+  mutate(CHR = as.character(CHR),
+         CHR = gsub("chr", "", CHR),
+         POS = as.character(POS)) %>%
+  full_join(originalGRS.nonHLADQ.INFO %>%
+              mutate(CHR = as.character(CHR), POS = as.character(POS)),
+            by = c("CHR", "POS"))
+
+INFO.nonHLADQ.origGRS
+```
+
+#### Make a dataframe of the imputation quality statistics for SNPs in the revised GRS
+```{r}
+INFO.revisedGRS <- anno.revisedGRS %>%
+  separate(POSITION_DBSNP151, into = c("CHR", "POS"), sep = ":", extra = "merge", remove = FALSE) %>%
+  select(RSID, CHR, POS) %>%
+  unique() %>%
+  rename(GRS_rsID = RSID) %>%
+  as.data.frame() %>%
+  mutate(CHR = as.character(CHR),
+         POS = as.character(POS)) %>%
+  full_join(revisedGRS.INFO %>%
+              mutate(CHR = as.character(CHR), POS = as.character(POS)),
+            by = c("CHR", "POS"))
+
+INFO.revisedGRS
+```
+
+```{r}
+INFO.nonHLADQ.origGRS
+INFO.revisedGRS
+
+setwd(dir.Data)
+fwrite(INFO.nonHLADQ.origGRS, "MEGA_041812_ImputationINFO_OriginalGRS_nonHLADQsnps_v0.1_JRS.csv")
+fwrite(INFO.revisedGRS, "MEGA_041812_ImputationINFO_RevisedGRS_v0.1_JRS.csv")
+```
+
+
+
+#### Setting and modifying theme for plots
+```{r}
+theme_set(theme_gray(base_size = 12, base_family = "Arial") +
+            theme(panel.border = element_rect(colour="black", fill = "transparent"),
+                  plot.title = element_text(face="bold", hjust = 0), # lineheight=.8, size=20,
+                  axis.text = element_text(color="black", size = 11), #size = 14
+                  axis.text.x = element_text(angle = 0, hjust = NULL),
+                  strip.background = element_rect(colour="black", fill = "light grey", size = 1), # adjusts facet label borders (if any)
+                  panel.background = element_blank(),
+                  panel.grid = element_blank()
+          ))
+RedBlue <- c("#CD3333", "#1874CD")
+GrayBlue <- c("grey", "#2b8cbe")
+```
+
+#### Make INFO plot data
+```{r}
+plotData.INFO.nonHLADQ.origGRS <- INFO.nonHLADQ.origGRS %>%
+  select(GRS_rsID, SNP, INFO.Rsq, INFO.EmpRsq, INFO.MAF) %>%
+  unique() %>%
+  mutate(plotName = paste(GRS_rsID, " (", SNP, ")", sep = "")) %>%
+  select(plotName, everything()) %>%
+  mutate(INFO.Rsq = as.numeric(INFO.Rsq)) %>%
+  arrange(INFO.Rsq) %>%
+  # Filter out the GRS SNP located on Chromosome 21:
+  filter(GRS_rsID != "rs1893592")
+
+plotData.INFO.revisedGRS <- INFO.revisedGRS %>%
+  select(GRS_rsID, SNP, INFO.Rsq, INFO.EmpRsq, INFO.MAF) %>%
+  unique() %>%
+  mutate(plotName = paste(GRS_rsID, " (", SNP, ")", sep = "")) %>%
+  select(plotName, everything()) %>%
+  mutate(INFO.Rsq = as.numeric(INFO.Rsq)) %>%
+  arrange(INFO.Rsq) %>%
+  # Filter out the GRS SNP located on Chromosome 21:
+  filter(GRS_rsID != "rs1893592")
+
+plotData.INFO.nonHLADQ.origGRS
+plotData.INFO.revisedGRS
+```
+
+#### Make barplots of Rsq
+```{r}
+plot.nonHLADQ.origGRS.Rsq <- plotData.INFO.nonHLADQ.origGRS %>%
+  ggplot(aes(x = reorder(plotName, INFO.Rsq), y = INFO.Rsq)) +
+  geom_bar(stat = "identity",
+           #color = GrayBlue[[1]],
+           fill = GrayBlue[[1]]) +
+  coord_flip() +
+  geom_hline(yintercept = 0.5, linetype = "dashed", color = "dodgerblue3") +
+  labs(title = "Estimated correlation of imputed genotypes and true, unobserved genotypes",
+       subtitle = "Original GRS (2019), non-HLA-DQ SNPs only",
+       caption = 'Rsq: "The estimated value of the squared correlation between imputed genotypes and true, unobserved genotypes"\n(https://genome.sph.umich.edu/wiki/Minimac3_Info_File).') +
+  ylab("Rsq") +
+  xlab("") +
+  theme(plot.caption = element_text(hjust = 0),
+        aspect.ratio = 0.9)
+
+plot.revisedGRS.Rsq <- plotData.INFO.revisedGRS %>%
+  ggplot(aes(x = reorder(plotName, INFO.Rsq), y = INFO.Rsq)) +
+  geom_bar(stat = "identity",
+           #color = GrayBlue[[1]],
+           fill = GrayBlue[[1]]) +
+  coord_flip() +
+  geom_hline(yintercept = 0.5, linetype = "dashed", color = "dodgerblue3") +
+  labs(title = "Estimated correlation of imputed genotypes and true, unobserved genotypes",
+       subtitle = "Revised GRS (2022)",
+       caption = 'Rsq: "The estimated value of the squared correlation between imputed genotypes and true, unobserved genotypes"\n(https://genome.sph.umich.edu/wiki/Minimac3_Info_File).') +
+  ylab("Rsq") +
+  xlab("") +
+  theme(plot.caption = element_text(hjust = 0),
+        aspect.ratio = 0.9)
+
+plot.nonHLADQ.origGRS.Rsq
+plot.revisedGRS.Rsq
+
+filename <- "MEGA_041822_Plot_Imputation_Rsq_OrigGRS_nonHLADQ_v0.1_JRS"
+setwd(dir.Plots)
+ggsave(plot = plot.nonHLADQ.origGRS.Rsq,
+       filename = paste(filename, ".png", sep = ""), width = 10, height = 10, units = "in")
+setwd(dir.Plots)
+ggsave(plot = plot.nonHLADQ.origGRS.Rsq,
+       filename = paste(filename, ".pdf", sep = ""), device = cairo_pdf, width = 10, height = 10, units = "in")
+
+filename <- "MEGA_041822_Plot_Imputation_Rsq_RevisedGRS_v0.1_JRS"
+setwd(dir.Plots)
+ggsave(plot = plot.revisedGRS.RSQ,
+       filename = paste(filename, ".png", sep = ""), width = 10, height = 10, units = "in")
+setwd(dir.Plots)
+ggsave(plot = plot.revisedGRS.RSQ,
+       filename = paste(filename, ".pdf", sep = ""), device = cairo_pdf, width = 10, height = 10, units = "in")
+```
+
+
+
+#### Make barplots of empirical Rsq
+```{r}
+plotData.INFO.nonHLADQ.origGRS %>% nrow()
+plotData.INFO.nonHLADQ.origGRS %>% filter(INFO.EmpRsq != "-") %>% nrow()
+
+plot.nonHLADQ.origGRS.EmpRsq <- plotData.INFO.nonHLADQ.origGRS %>%
+  filter(INFO.EmpRsq != "-") %>%
+  mutate(INFO.EmpRsq = as.numeric(INFO.EmpRsq)) %>%
+  ggplot(aes(x = reorder(plotName, INFO.EmpRsq), y = INFO.EmpRsq)) +
+  geom_bar(stat = "identity",
+           #color = GrayBlue[[1]],
+           fill = GrayBlue[[1]]) +
+  coord_flip() +
+  geom_hline(yintercept = 0.5, linetype = "dashed", color = "dodgerblue3") +
+  labs(title = "Estimated correlation of imputed genotypes and true, observed genotypes",
+       subtitle = "Original GRS (2019), observed non-HLA-DQ SNPs only",
+       caption = 'EmpRsq: The estimated squared correlation "between the true genotyped values and the imputed dosages that were calculated by hiding all known genotyped for the given SNP"\n(https://genome.sph.umich.edu/wiki/Minimac3_Info_File).') +
+  ylab("EmpRsq") +
+  xlab("") +
+  theme(plot.caption = element_text(hjust = 0),
+        aspect.ratio = 0.9)
+
+plot.revisedGRS.EmpRsq <- plotData.INFO.revisedGRS %>%
+  filter(INFO.EmpRsq != "-") %>%
+  mutate(INFO.EmpRsq = as.numeric(INFO.EmpRsq)) %>%
+  ggplot(aes(x = reorder(plotName, INFO.EmpRsq), y = INFO.EmpRsq)) +
+  geom_bar(stat = "identity",
+           #color = GrayBlue[[1]],
+           fill = GrayBlue[[1]]) +
+  coord_flip() +
+  geom_hline(yintercept = 0.5, linetype = "dashed", color = "dodgerblue3") +
+  labs(title = "Estimated correlation of imputed genotypes and true, observed genotypes",
+       subtitle = "Revised GRS (2022), observed SNPs only",
+       caption = 'EmpRsq: The estimated squared correlation "between the true genotyped values and the imputed dosages that were calculated by hiding all known genotyped for the given SNP"\n(https://genome.sph.umich.edu/wiki/Minimac3_Info_File).') +
+  ylab("EmpRsq") +
+  xlab("") +
+  theme(plot.caption = element_text(hjust = 0),
+        aspect.ratio = 0.9)
+
+plot.nonHLADQ.origGRS.EmpRsq
+plot.revisedGRS.EmpRsq
+
+filename <- "MEGA_041422_Plot_Imputation_EmpRsq_OrigGRS_nonHLADQ_v0.1_JRS"
+setwd(dir.Plots)
+ggsave(plot = plot.nonHLADQ.origGRS.EmpRsq,
+       filename = paste(filename, ".png", sep = ""), width = 10, height = 10, units = "in")
+setwd(dir.Plots)
+ggsave(plot = plot.nonHLADQ.origGRS.EmpRsq,
+       filename = paste(filename, ".pdf", sep = ""), device = cairo_pdf, width = 10, height = 10, units = "in")
+
+filename <- "MEGA_041422_Plot_Imputation_EmpRsq_RevisedGRS_v0.1_JRS"
+setwd(dir.Plots)
+ggsave(plot = plot.revisedGRS.EmpRsq,
+       filename = paste(filename, ".png", sep = ""), width = 10, height = 10, units = "in")
+setwd(dir.Plots)
+ggsave(plot = plot.revisedGRS.EmpRsq,
+       filename = paste(filename, ".pdf", sep = ""), device = cairo_pdf, width = 10, height = 10, units = "in")
+```
+
+#### Make a simple text file that lists all of the GRS rsIDs
+```{r}
+grs_rsIDs.orig <- rbind(sharpS1 %>%
+                          select(`HLA-DQ.haplotype`, SNP1, SNP2) %>%
+                          rename(HLA_DQ_haplotype = `HLA-DQ.haplotype`) %>%
+                          gather(key = "key", value = "value", SNP1:SNP2) %>%
+                          mutate(SNP_index = gsub("SNP", "", key) %>% as.numeric()) %>%
+                          rename(GRS_rsID = value) %>%
+                          select(HLA_DQ_haplotype, SNP_index, GRS_rsID) %>%
+                          arrange(HLA_DQ_haplotype) %>%
+                          select(GRS_rsID),
+                        anno.nonHLADQ.origGRS %>% select(name) %>% rename(GRS_rsID = name) %>% as.data.frame()) %>%
+  unique()
+
+grs_rsIDs.revised <- anno.revisedGRS %>%
+  select(RSID) %>%
+  rename(GRS_rsID = RSID) %>%
+  unique()
+
+grs_rsIDs.orig_revised <- rbind(grs_rsIDs.orig, grs_rsIDs.revised) %>%
+  unique()
+
+grs_rsIDs.orig
+grs_rsIDs.revised
+grs_rsIDs.orig_revised
+
+setwd(dir.Data)
+fwrite(grs_rsIDs.orig_revised, "MEGA_041822_rsIDs_GRSoriginal_GRSrevised_v0.1_JRS.txt", sep = "\t", col.names = FALSE, row.names = FALSE, quote = FALSE)
+fwrite(grs_rsIDs.orig, "MEGA_041822_rsIDs_GRSoriginal_v0.1_JRS.txt", sep = "\t", col.names = FALSE, row.names = FALSE, quote = FALSE)
+fwrite(grs_rsIDs.revised, "MEGA_041822_rsIDs_GRSrevised_v0.1_JRS.txt", sep = "\t", col.names = FALSE, row.names = FALSE, quote = FALSE)
+```
+
+
+```{r}
+grs_rsIDs.orig$GRS_rsID %>% paste(collapse = ",")
+```
+
+```{r}
+grs_rsIDs.revised$GRS_rsID %>% paste(collapse = ",")
+```
+
+#### Use the strings produced above to search GRASP and HaploReg
+https://pubs.broadinstitute.org/mammals/haploreg/haploreg.php
+https://grasp.nhlbi.nih.gov/Search.aspx
+```{r}
+query.GRSorig <- c("rs1049124","rs7775228","rs2187668","rs1617322","rs73405471","rs79550239","rs7454108","rs3957146","rs10800746","rs12068671","rs12142280",
+                   "rs1359062","rs4445406","rs10167650","rs1018326","rs13003464","rs1980422","rs6715106","rs990171","rs1353248","rs2030519","rs2561288",
+                   "rs61579022","rs7616215","rs13132308","rs1050976","rs1611710","rs17264332","rs182429","rs2301226","rs3128927","rs4143332","rs55743914",
+                   "rs6937061","rs1250552","rs2387397","rs10892258","rs61907765","rs7104791","rs3184504","rs11851414","rs1378938","rs6498114","rs11875687",
+                   "rs1893592","rs4821124")
+
+query.GRSrevised <- c("rs1049124","rs2187668","rs73405471","rs9275437","rs4143332","rs3128927","rs2301226","rs6937061","rs1611710","rs13132308","rs2030519",
+                      "rs1323292","rs17264332","rs6715106","rs55743914","rs990171","rs1980422","rs3184504","rs61907765","rs13003464","rs11875687","rs12068671",
+                      "rs1250552","rs10892258","rs1018326","rs182429","rs7104791","rs4821124","rs4445406","rs11801183","rs6498114","rs1353248","rs947474",
+                      "rs1893592","rs11851414","rs1378938","rs10800746","rs1050976","rs7616215","rs2561288","rs61579022","rs10167650")
+query.GRSorig
+query.GRSrevised
+
+#install.packages("haploR", dependencies = TRUE)
+library(haploR)
+queryHaploReg.GRSorig <- queryHaploreg(query = query.GRSorig, url = "https://pubs.broadinstitute.org/mammals/haploreg/haploreg.php")
+queryHaploReg.GRSrevised <- queryHaploreg(query = query.GRSrevised, url = "https://pubs.broadinstitute.org/mammals/haploreg/haploreg.php")
+queryHaploReg.GRSorig
+queryHaploReg.GRSrevised
+
+setwd(dir.GRSanno)
+fwrite(queryHaploReg.GRSorig, "041422_HaploReg_GRSoriginal_v0.1_JRS.txt")
+fwrite(queryHaploReg.GRSrevised, "041422_HaploReg_GRSrevised_v0.1_JRS.txt")
+```
+
+
+```{r}
+pwd
+wget 'https://pubs.broadinstitute.org/mammals/haploreg/haploreg.php'
+
+library(XML)
+library(httr)
+
+theurl <- 'https://pubs.broadinstitute.org/mammals/haploreg/haploreg.php'
+doc <- htmlParse(GET(theurl, user_agent("Chrome")))
+results <- xpathSApply(doc, "//*/table[@id='table_results_r_1']")
+results <- readHTMLTable(results[[1]])
+rm(doc)
+
+
+library(XML)
+library(RCurl)
+library(rlist)
+theurl <- getURL("https://pubs.broadinstitute.org/mammals/haploreg/haploreg.php",.opts = list(ssl.verifypeer = FALSE) )
+tables <- readHTMLTable(theurl)
+tables <- list.clean(tables, fun = is.null, recursive = FALSE)
+n.rows <- unlist(lapply(tables, function(t) dim(t)[1]))
+
+tables
+```
+
+```{r}
+setwd("/Users/shawjes/Dropbox/EspinosaGroup/ANALYSIS/Celiac_MultiOmics/GRS/DSMIG_Shared/Manuscript_Figure1/Annotation")
+haploreg.GRSorig<- fread("041422_HaploReg_GRSoriginal_v0.1_JRS.txt", fill = TRUE)
+haploreg.GRSrevised <- fread("041422_HaploReg_GRSrevised_v0.1_JRS.txt", fill = TRUE)
+GRASP.GRSorig <- read.xlsx("041422_GRASPsearch_GRSoriginal_v0.1_JRS.xlsx")
+GRASP.GRSrevised <- read.xlsx("041422_GRASPsearch_GRSrevised_v0.1_JRS.xlsx")
+
+test <- fread("/Users/shawjes/Dropbox/EspinosaGroup/ANALYSIS/Celiac_MultiOmics/GRS/DSMIG_Shared/Manuscript_Figure1/Annotation/041422_HaploReg_GRSoriginal_DQB1_v0.1_JRS.txt", sep = "\t", fill = TRUE)
+test
+
+haploreg.GRSorig
+haploreg.GRSrevised
+GRASP.GRSorig
+GRASP.GRSrevised
+```
+
+
+
+
+# ARCHIVE
+```{r}
+plotData.INFO.revisedGRS %>%
+  filter(INFO.EmpRsq != "-")
+```
+
+
+
+
+```{r}
+
+
+names(imputation.info)[[1]]
+imputation.info[[1]]
+
+names(snp_list.split)[[1]]
+snp_list.split[[1]]
+
+names(snp_list.split) %>% length()
+imputation.info %>% length()
+
+#imputation.info.GRS <- list()
+#for ( i in 1:c(seq(1:20),22)) {
+  #imputation.info.GRS[[i]] <- imputation.info$`1` %>% filter(SNP %in% snp_list.split$`1`$SNP)
+
+snp_list.split %>% names() %>% paste(collapse = ",")
+
+temp <- c(1,2,3,4,6,10,11,12,14,15,16,18,22)
+
+
+
+imputation.info.GRS[[1]] <- imputation.info$`1` %>% filter(SNP %in% snp_list.split$`1`$SNP)
+
+
+
+temp <- c(1,2,3,4,6,10,11,12,14,15,16,18,22)
+imputation.info.GRS <- list()
+for ( i in length(temp)) {
+  
+  chr.now <- temp[[i]]
+  
+  imputation.info.GRS[[i]] <- imputation.info[[chr.now]] %>% filter(SNP %in% snp_list.split[[chr.now]]$SNP)
+}
+
+imputation.info.GRS %>% rbindlist() %>% dim()
+
+imputation.info.GRS %>% lapply(as.data.frame) %>% lapply(dim)
+```
+
+
+```{r}
+setwd(dir.Data)
+info.GRSsnps <- fread("/Users/shawjes/Dropbox/EspinosaGroup/DATA_MAIN/MEGA/Imputation_Ref1000G3v5/Out/Imputation_Results_CLEAN/autosomesNoChr21.info.gz", sep = "\t")
+
+info.GRSsnps
+```
+
+
+
+
+```{r}
+info <- fread("/Users/shawjes/Dropbox/EspinosaGroup/DATA_MAIN/MEGA/Imputation_Ref1000G3v5/Out/Imputation_Results_CLEAN/autosomesNoChr21.info.gz")
+
+info
+```
+
+
+
+
+
+
+
+
+#### Make a text file listing the variant IDs for the GRS SNPs in the original GRS and the revised GRS
+```{r}
+to_grep <- imputed.traw01 %>% select(SNP) %>% unique()
+
+setwd(dir.Data)
+fwrite(to_grep, "MEGA_041822_Imputed_VariantIDs_OrigGRS_RevisedGRS_v0.1_JRS.txt", sep = "\t", row.names = FALSE, col.names = FALSE, quote = FALSE)
+```
+
+#### Search the info file and filter it to the variant IDs representing SNPs that are in the original or revised GRS
+```{bash}
+cd '/Users/shawjes/Dropbox/EspinosaGroup/ANALYSIS/Celiac_MultiOmics/GRS/DSMIG_Shared/Manuscript_Figure1/Data'
+zcat < '/Users/shawjes/Dropbox/EspinosaGroup/DATA_MAIN/MEGA/Imputation_Ref1000G3v5/Out/Imputation_Results_CLEAN/autosomesNoChr21.info.gz' | awk 'NR==FNR{_[$1];next}!($1 in _)' 'MEGA_041822_Imputed_VariantIDs_OrigGRS_RevisedGRS_v0.1_JRS.txt' - > 'MEGA_041822_SNPs_OrigGRS_RevisedGRS_v0.1_JRS.info.txt'
+```
+
+
+
+```{bash}
+cd '/Users/shawjes/Dropbox/EspinosaGroup/ANALYSIS/Celiac_MultiOmics/GRS/DSMIG_Shared/Manuscript_Figure1/Data'
+zcat < '/Users/shawjes/Dropbox/EspinosaGroup/DATA_MAIN/MEGA/Imputation_Ref1000G3v5/Out/Imputation_Results_CLEAN/autosomesNoChr21.info.gz' | grep -f 'MEGA_041822_Imputed_VariantIDs_OrigGRS_RevisedGRS_v0.1_JRS.txt' > 'MEGA_041822_SNPs_OrigGRS_RevisedGRS_v0.1_JRS.info'
+```
+
+```{r}
+setwd(dir.Data)
+GRSsnps.info <- fread("MEGA_041822_SNPs_OrigGRS_RevisedGRS_v0.1_JRS.info")
+
+GRSsnps.info
+```
+
+
+```{r}
+setwd(dir.ImputationResultsRAW)
+imputation.info <- list.files(pattern = "info") %>%
+  lapply(fread) %>%
+  rbindlist()
+
+imputation.info
+```
+
+
+Code reference: https://stackoverflow.com/questions/19380925/grep-a-large-list-against-a-large-file
+grep -f the_ids.txt huge.csv
+   -F, --fixed-strings
+          Interpret PATTERN as a  list  of  fixed  strings,  separated  by
+          newlines,  any  of  which is to be matched.  (-F is specified by
+          POSIX.)
+```{r}
+          
+          
+imputed.dosage.OrigGRS.nonHLADQ %>%
+  select(-c(IID, Dosage.COUNTED)) %>%
+  unique() %>%
+  select(SNP) %>%
+  left_join(imputation.info, by = "SNP")
+
+imputed.dosage.RevisedGRS %>%
+  select(-c(IID, Dosage.COUNTED)) %>%
+  unique() %>%
+  select(SNP)
+
+imputation.info
+```
+

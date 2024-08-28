@@ -1,0 +1,248 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+#### Load frequently used packages
+```{r}
+library(skimr)
+library(openxlsx)
+library(ggrepel)
+library(dplyr)
+library(tidyr)
+library(data.table)
+library(broom)
+library(broomExtra)
+library(tibble)
+library(sjstats)
+library(car)
+#library(lme4)
+#library(lmerTest)
+library(ggplot2)
+library(tibble)
+library(modelr)
+library(tidyverse)
+#library(miceadds)
+library(ggforce)
+require(openxlsx)
+library(tidyverse)
+library(caret)
+#library(glmnet)
+library(ggplot2)
+library(gridExtra)
+library(MASS) # rlm
+library(lmPerm)
+library(circlize)
+library(RColorBrewer)
+library(ComplexHeatmap)
+
+select <- dplyr::select
+filter <- dplyr::filter
+`%notin%` <- Negate(`%in%`)
+
+library(illuminaio)
+library(IlluminaDataTestFiles)
+#install.packages("scales")
+library(scales)
+```
+
+#### Define in/out directories used in this script
+```{r}
+dir.idats <- "/Users/shawjes/Dropbox/EspinosaGroup/DATA_MAIN/MEGA/031422_Proton_to_Local/idats"
+
+dir.chr21genotyping <- "/Users/shawjes/Dropbox/EspinosaGroup/DATA_MAIN/MEGA/chr21_genotyping"
+```
+
+#### Print session info for reproducibility
+```{r}
+save.sessionInfo <- sessionInfo()
+
+save.sessionInfo
+
+setwd(dir.chr21genotyping)
+saveRDS(save.sessionInfo, "MEGA_041422_sessionInfo_chr21_genotyping_v0.1_JRS.rds")
+```
+
+
+#### Download Illumina product files for the MEGA array
+```{bash}
+# Change working directory to destination for the files to be downloaded.
+cd '/Users/shawjes/Dropbox/EspinosaGroup/DATA_MAIN/MEGA/chr21_genotyping/Illumina_ProductFiles'
+wget https://webdata.illumina.com/downloads/productfiles/multiethnic-global-8/v1-0/infinium-multi-ethnic-global-8-d1-csv.zip
+
+wget https://webdata.illumina.com/downloads/productfiles/multiethnic-global-8/v1-0/infinium-multi-ethnic-global-8-d1-bpm.zip
+
+wget https://webdata.illumina.com/downloads/productfiles/multiethnic-global-8/v1-0/infinium-multi-ethnic-global-8-d1-cluster-file.zip
+
+wget https://support.illumina.com/content/dam/illumina-support/documents/downloads/productfiles/multiethnic-global/infinium-multi-ethnic-global-8-d1-product-descriptor-file.zip
+```
+
+#### Download more Illumina product files for the MEGA array
+```{bash}
+# Change working directory to destination for the files to be downloaded.
+cd '/Users/shawjes/Dropbox/EspinosaGroup/DATA_MAIN/MEGA/chr21_genotyping/Illumina_ProductFiles'
+
+wget https://support.illumina.com/content/dam/illumina-support/documents/downloads/productfiles/multiethnic-global/multi-ethnic-global-8-d1-rsids.zip
+
+wget https://webdata.illumina.com/downloads/productfiles/multiethnic-global-8/v1-0/multi-ethnic-global-8-d1-strand-report.zip
+
+wget https://webdata.illumina.com/downloads/productfiles/multiethnic-global-8/v1-0/multi-ethnic-global-8-d1-population-reports-maf-copy-numbers.zip
+```
+
+#### Unzip the MEGA product files
+```{bash}
+cd '/Users/shawjes/Dropbox/EspinosaGroup/DATA_MAIN/MEGA/chr21_genotyping/Illumina_ProductFiles'
+
+unzip infinium-multi-ethnic-global-8-d1-csv.zip
+
+unzip infinium-multi-ethnic-global-8-d1-bpm.zip
+
+unzip infinium-multi-ethnic-global-8-d1-cluster-file.zip
+
+unzip infinium-multi-ethnic-global-8-d1-product-descriptor-file.zip
+```
+
+#### Unzip more MEGA product files
+```{bash}
+cd '/Users/shawjes/Dropbox/EspinosaGroup/DATA_MAIN/MEGA/chr21_genotyping/Illumina_ProductFiles'
+
+unzip multi-ethnic-global-8-d1-rsids.zip
+
+unzip multi-ethnic-global-8-d1-strand-report.zip
+
+unzip multi-ethnic-global-8-d1-population-reports-maf-copy-numbers.zip
+```
+
+#### Run example code provided for illuminaio package
+Reference: https://bioconductor.org/packages/devel/bioc/vignettes/illuminaio/inst/doc/illuminaio.pdf
+```{r}
+idatFile <- system.file("extdata", "idat", "4343238080_A_Grn.idat",
+                        package = "IlluminaDataTestFiles")
+idat <- readIDAT(idatFile)
+
+class(idat)
+names(idat) #[1] "Barcode"  "Section"  "ChipType" "Quants"   "RunInfo" 
+
+idat$ChipType #[1] "BeadChip 6x2"
+
+idatData <- idat$Quants
+
+idatData
+```
+
+#### Collect the filepaths for the idat files in a text file
+```{bash}
+#mkdir '/Users/shawjes/Dropbox/EspinosaGroup/DATA_MAIN/MEGA/chr21_genotyping'
+
+cd '/Users/shawjes/Dropbox/EspinosaGroup/DATA_MAIN/MEGA/031422_Proton_to_Local/idats'
+find . -type f
+
+cd '/Users/shawjes/Dropbox/EspinosaGroup/DATA_MAIN/MEGA/031422_Proton_to_Local/idats'
+find . -type f > '/Users/shawjes/Dropbox/EspinosaGroup/DATA_MAIN/MEGA/chr21_genotyping/idat_paths.txt'
+```
+
+#### Read in the text file of idat paths
+```{r}
+setwd("/Users/shawjes/Dropbox/EspinosaGroup/DATA_MAIN/MEGA/chr21_genotyping")
+idat_paths <- fread("idat_paths.txt", header = FALSE) %>%
+                 rename(partial_path = V1) %>%
+                 filter(grepl(".idat", partial_path)==TRUE)
+
+idat_paths
+```
+
+#### Use the illuminaio package to read in the idat files and save them to an R data object
+```{r}
+HTP.idat <- list()
+HTP.idatData <- list()
+HTP.idatData.29800833.rs1893592 <- list()
+for ( i in 1:nrow(idat_paths) ){
+  idat_id <- idat_paths$partial_path[[i]]
+  
+  setwd("/Users/shawjes/Dropbox/EspinosaGroup/DATA_MAIN/MEGA/031422_Proton_to_Local/idats")
+  HTP.idat[[i]] <- try(readIDAT(idat_id))
+  
+  HTP.idatData[[i]] <- HTP.idat[[i]]$Quants %>%
+    as.data.frame()%>%
+    mutate(Barcode = HTP.idat[[i]]$Barcode) %>%
+    rownames_to_column("Quants_rowname") %>%
+    mutate(idatID = idat_id) %>%
+    select(idatID, Barcode, everything())
+}
+
+setwd("/Users/shawjes/Dropbox/EspinosaGroup/DATA_MAIN/MEGA/chr21_genotyping/idatQuants")
+saveRDS(HTP.idatData, file = "MEGA_041422_idat_Quants_all_v0.1_JRS.rds")
+```
+
+
+##### Reference: https://www.biostars.org/p/98874/
+```{r}
+# Theta = (2/pi)*arctan(B/A)
+# 
+# I struggled with finding the mathematical explanation behind this transformation, so hopefully this helps someone. It is explained in the second paragraph of the background of this paper:
+# 
+# https://www.ncbi.nlm.nih.gov/pmc/articles/PMC2572624/
+# 
+# The way I understood it is that for illumina infinium arrays the two channels:
+# 
+# Cy5 = Red = A allele = X signal Cy3 = Green = B allele = Y signal
+# 
+# The raw data is analyzed like this in GenomeStudio
+# 
+# The raw X and Y signal from each allele is normalized to account for background signal, etc using a proprietary illumina algorithm
+# 
+# These normalized X and Y signals for each sample can be plotted on a cartesian coordinate system to get this type of plot in GenomeStudio:
+# 
+# 1
+# 
+# More commonly, the "polar transformation" of these values are shown with R plotted against theta like this:
+# https://imgur.com/dbRjBBp
+# 
+# R is the intensities. R for a sample is the sum of normalized X and Y (R= X+ Y)
+# Theta is the B allele frequency and is calculated by: (2/pi)*arctan(normalized Y/ normalized X)
+# You can check this math by selecting "filter rows" in the "Full Data Table" and making Theta, R, X, and Y visible for every SNP in GenomeStudio then plugging in X and Y to the formulas in 3.
+```
+
+
+#### Reference: https://bioc.ism.ac.jp/packages/3.14/bioc/manuals/illuminaio/man/illuminaio.pdf
+"For both file types the most important entry in the returned list is the item Quants. When reading
+unencrypted files this contains average intensity (Mean), number of beads (NBeads) and a measure
+of variability (SD) for each bead type on the array."
+
+```{r}
+# https://bioc.ism.ac.jp/packages/3.14/bioc/manuals/illuminaio/man/illuminaio.pdf
+# Quants = 
+## Col1: Average intensity (Mean)
+## Col2: Number of beads (NBeads)
+## Col3: Measure of variability (SD)
+
+# https://www-ncbi-nlm-nih-gov.proxy.hsl.ucdenver.edu/pmc/articles/PMC3968891/
+# Smith, Mike L., et al. “Illuminaio: An Open Source IDAT Parsing Tool for Illumina Microarrays.” F1000Research, vol. 2, Dec. 2013, p. 264. PubMed Central, https://doi.org/10.12688/f1000research.2-264.v1.
+# # "Data format
+# The IDAT file format varies depending upon the array platform (Table 1). IDATs generated during the scanning of genotyping and methylation BeadArrays are binary files (one for each of the red and green channels). The bulk of each file is comprised of four fields: the ID of each bead-type on the array, the mean and standard deviation of their intensities, and the number of beads of each type.
+# Additionally, metadata including the date the array was scanned, specific software versions used and the type of BeadChip are also included. Once the structure of the file is understood these binary values can be read directly. On the other hand, gene expression IDAT files are produced as encrypted XML files. Once decrypted the majority of the data are found as ten Base64 encoded strings. These ten fields include the ID, mean and standard deviation values as found in genotyping IDATs, as well as median and trimmed-mean intensity values, the mean and standard deviation of local background intensities,  and the number of beads both before and after outliers have been excluded. Each array type is also associated with a manifest file (with file extension BPM or BGX) that provides details of probe sequences, intended genomic targets and whether it is a control probe or not, information that is necessary to correctly interpret the data."
+
+# Key excerpt:
+# "The bulk of each file is comprised of four fields: the ID of each bead-type on the array, the mean and standard deviation of their intensities, and the number of beads of each type."
+
+
+# HELPFUL:
+# https://dnatech.genomecenter.ucdavis.edu/wp-content/uploads/2013/05/technote_infinium_genotyping_data_analysis.pdf
+
+# https://github.com/NCBI-Hackathons/Scan2CNV/issues/40
+
+# https://www.illumina.com/Documents/products/technotes/technote_cytoanalysis.pdf
+# GenomeStudio software generates plots of all SNPs for B allele frequency (interpolated from known
+# B allele frequencies of the three canonical clusters: 0, 0.5, and 1)
+# and log R ratio (log2(Robserved/Rexpected)), where Rexpected is interpolated
+# from the observed allelic ratio with respect to the canonical genotype
+# clusters3,4,5.
+
+
+# HELPFUL - IMPORTANT - DEFINE THETA
+# https://slideplayer.com/slide/10467032/
+
+
+# VERY IMPORTANT
+# https://support.illumina.com/bulletins/2016/05/infinium-genotyping-manifest-column-headings.html
+```

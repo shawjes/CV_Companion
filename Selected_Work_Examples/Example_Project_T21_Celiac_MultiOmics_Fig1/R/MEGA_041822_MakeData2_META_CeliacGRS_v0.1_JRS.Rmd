@@ -1,0 +1,446 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+# FOLLOW-UP -- Add preamble to each MakeData script
+#### Goals
+Initialize metadata for the GRS analyses
+Identify individuals who are eligible for analysis based on having known Celiac status and no known first degree relatives in the analysis cohort
+
+#### Load frequently used packages
+```{r}
+library(openxlsx)
+library(ggrepel)
+library(dplyr)
+library(tidyr)
+library(data.table)
+library(broom)
+library(broomExtra)
+library(tibble)
+library(sjstats)
+library(car)
+library(lme4)
+library(lmerTest)
+library(ggplot2)
+library(tibble)
+library(modelr)
+library(tidyverse)
+#library(miceadds)
+library(ggforce)
+require(openxlsx)
+library(tidyverse)
+library(caret)
+library(glmnet)
+library(ggplot2)
+select <- dplyr::select
+filter <- dplyr::filter
+```
+
+#### Print session info for reproducibility
+```{r}
+sessionInfo()
+```
+
+#### Define in/out directory
+```{r}
+dir <- "/Users/shawjes/Dropbox/EspinosaGroup/ANALYSIS/Celiac_MultiOmics/GRS/DSMIG_Shared/Manuscript_Figure1/Data"
+```
+
+#### Load MEGA to HTP ID key
+```{r}
+setwd(dir)
+MEGA.IDkey <- fread("MEGA_041822_MEGA2_to_HTP_ID_key_v0.1_JRS.csv")
+
+MEGA.IDkey
+```
+
+#### Read in latest version of the meta/comorb data
+```{r}
+setwd("/Users/shawjes/Dropbox/EspinosaGroup/DATA_MAIN/META/OneDrive_1_2-17-2022")
+meta_comorb.022021 <- fread("HTP_CLEANED_02_2021_v0.5_COMORB_MASTER_RecordID_vs_LabID.Labels.tsv") %>%
+  select(FamilyID, RecordID, LabID, Age_at_visit, Sex, Karyotype, everything()) %>%
+  mutate(Celiac = as.numeric(`Celiac disease`))
+
+meta_comorb.022021
+```
+
+#### Put the column names representing identifiers into a vector for reference below
+```{r}
+ID_colnames <- c("FamilyID", "RecordID", "MEGA.FID", "MEGA.IID", "MEGA.LabID")
+```
+
+#### Make subset of meta/comorb dataset specific to Visit 1 for T21s with complete Celiac status
+```{r}
+meta_comorb.T21_visit1_Celiac <- meta_comorb.022021 %>%
+  filter(Karyotype == "T21" &
+           !is.na(LabID) & Event_name == "Visit 1" & # Assuming that Celiac status for HTP was ascertained as of participant visit 1
+           !is.na(`Celiac disease`)) %>%
+  select(colnames(meta_comorb.022021)[1:18],
+         `Celiac disease`, Celiac,
+         everything()) %>%
+  rename(Age_at_visit1 = Age_at_visit)
+
+meta_comorb.T21_visit1_Celiac
+```
+
+#### Make meta/comorb dataset specific to visit 1 for T21s with complete Celiac status and complete MEGA genotyping
+```{r}
+#colnames(MEGA.IDkey)
+#colnames(meta_comorb.022021)
+
+meta.MEGA.T21_visit1_Celiac <- MEGA.IDkey %>%
+  filter(HTP_participant == "Yes") %>%
+  select(-c(HTP_participant)) %>%
+  left_join(meta_comorb.T21_visit1_Celiac %>% mutate(In_T21celiac_metadata = 1),
+            by = c("FamilyID", "RecordID"))
+# Note: Here I'm joining to the metadata corresponding to visit 1, when Celiac status was determined for the purposes of the study. 
+# For this reason I am not including LabID as a join by variable.
+
+meta.MEGA.T21_visit1_Celiac %>%
+  group_by(In_plink_fam, In_T21celiac_metadata) %>%
+  summarise(N = n())
+print("6 participants have complete genotype data but incomplete Celiac status.")
+
+meta.MEGA.T21_visit1_Celiac01 <- meta.MEGA.T21_visit1_Celiac %>%
+  filter(!is.na(In_plink_fam) & !is.na(In_T21celiac_metadata)) %>%
+  select(-c(In_plink_fam, In_T21celiac_metadata))
+
+meta.MEGA.T21_visit1_Celiac01
+```
+
+#### Define custom function for mode
+```{r}
+# Create the function.
+getmode <- function(v) {
+   uniqv <- unique(v)
+   uniqv[which.max(tabulate(match(v, uniqv)))]
+}
+```
+
+#### Check that each individual was only genotyped one time
+```{r}
+if( (meta.MEGA.T21_visit1_Celiac01 %>%
+     group_by(RecordID) %>%
+     summarise(N = n()) %>%
+     arrange(desc(N)) %>%
+     ungroup() %>%
+     summarise(var(N)) == 0) ) {"Great, all RecordIDs have the same number of rows of data."} else {
+       print("Oops, RecordIDs have varying number of rows.");
+       temp <- meta.MEGA.T21_visit1_Celiac01 %>%
+         group_by(RecordID) %>%
+         summarise(N_rows = n()) %>%
+         arrange(desc(N_rows)) %>%
+         ungroup() %>%
+         mutate(min.N_rows = min(N_rows),
+                max.N_rows = max(N_rows),
+                mode.N_rows = getmode(N_rows),
+                N_rows_Equal_mode = ifelse(N_rows == mode.N_rows, 1, 0),
+                N_rows_NotEqual_mode = ifelse(N_rows != mode.N_rows, 1, 0))
+       print(paste("N = ", sum(temp$N_rows_Equal_mode), " RecordIDs with N_rows = ", unique(temp$mode.N_rows), sep = ""))
+       print(paste("N = ", sum(temp$N_rows_NotEqual_mode),
+                   " RecordIDs with mean N_rows = ",
+                   mean((temp %>% filter(N_rows!=mode.N_rows))$N_rows),
+                   "\nPrinting problematic RecordIDs now. Problems stored in `problems`",
+                   sep = ""))
+       #print(paste("N = ", sum(temp$N_Equal_mode[1]), " samples with nrow = ", temp$N, sep = ""))
+       
+       problems <- temp %>%
+         filter(N_rows != mode.N_rows) %>%
+         select(RecordID, N_rows, mode.N_rows) %>%
+         left_join(meta.MEGA.T21_visit1_Celiac01, by = "RecordID") %>%
+         select(FamilyID, RecordID, MEGA.IID, MEGA.LabID, N_rows, mode.N_rows) %>%
+         unique()
+       
+       print(problems)
+     }
+
+print("Based on this output, five samples were genotyped twice in different wells.")
+print("Below we will clean the data to keep only the first sample well for each RecordID.")
+```
+
+#### Since some RecordIDs/LabIDs were genotyped in more than one well, sort MEGA.IID alphabetically within RecordID and then keep the first MEGA.IID
+```{r}
+# FOLLOW UP: Double check if the participant genotyped twice has complete genotypes in both sets of genotypes.
+
+meta.MEGA.T21_visit1_Celiac02 <- meta.MEGA.T21_visit1_Celiac01 %>%
+  select(RecordID, MEGA.IID) %>%
+  unique() %>%
+  group_by(RecordID) %>%
+  arrange(MEGA.IID) %>%
+  mutate(index_MEGA.IID_for_RecordID = row_number()) %>%
+  ungroup() %>%
+  #arrange(desc(index_MEGA.IID_for_RecordID)) %>%
+  full_join(meta.MEGA.T21_visit1_Celiac01, by = c("RecordID", "MEGA.IID")) %>%
+  mutate(EXCLUDE_from_analysis = ifelse(index_MEGA.IID_for_RecordID > 1, 1, 0),
+         EXCLUDE_reason = ifelse(EXCLUDE_from_analysis == 1 & index_MEGA.IID_for_RecordID >1, "RecordID genotyped twice.", NA))
+
+meta.MEGA.T21_visit1_Celiac02 %>%
+  select(FamilyID, RecordID, MEGA.FID, MEGA.IID, MEGA.LabID,
+         index_MEGA.IID_for_RecordID, EXCLUDE_from_analysis, EXCLUDE_reason, everything()) %>%
+  arrange(RecordID, index_MEGA.IID_for_RecordID)
+```
+
+#### Check if now each RecordID has only one MEGA.IID
+```{r}
+print(paste("Rows in `mega_Snp_dosage.clean01` = ", meta.MEGA.T21_visit1_Celiac01 %>% select(RecordID, MEGA.IID) %>% unique() %>% nrow(), sep = ""))
+print(paste("Rows in `mega_Snp_dosage.clean02` = ", meta.MEGA.T21_visit1_Celiac02 %>% filter(EXCLUDE_from_analysis == 0) %>% select(RecordID, MEGA.IID) %>% unique() %>% nrow(), sep = ""))
+
+if( (meta.MEGA.T21_visit1_Celiac02 %>% filter(EXCLUDE_from_analysis == 0) %>%
+     group_by(RecordID) %>%
+     summarise(N = n()) %>%
+     arrange(desc(N)) %>%
+     ungroup() %>%
+     summarise(var(N)) == 0) ) {"Great, now all RecordIDs have the same number of rows of data."} else {
+       print("Oops, RecordIDs have varying number of rows.");
+       temp <- meta.MEGA.T21_visit1_Celiac02 %>% filter(EXCLUDE_from_analysis == 0) %>%
+         group_by(RecordID) %>%
+         summarise(N_rows = n()) %>%
+         arrange(desc(N_rows)) %>%
+         ungroup() %>%
+         mutate(min.N_rows = min(N_rows),
+                max.N_rows = max(N_rows),
+                mode.N_rows = getmode(N_rows),
+                N_rows_Equal_mode = ifelse(N_rows == mode.N_rows, 1, 0),
+                N_rows_NotEqual_mode = ifelse(N_rows != mode.N_rows, 1, 0))
+       print(paste("N = ", sum(temp$N_rows_Equal_mode), " RecordIDs with N_rows = ", unique(temp$mode.N_rows), sep = ""))
+       print(paste("N = ", sum(temp$N_rows_NotEqual_mode),
+                   " RecordIDs with mean N_rows = ",
+                   mean((temp %>% filter(N_rows!=mode.N_rows))$N_rows),
+                   "\nPrinting problematic RecordIDs now. Problems stored in `problems`",
+                   sep = ""))
+       #print(paste("N = ", sum(temp$N_Equal_mode[1]), " samples with nrow = ", temp$N, sep = ""))
+       
+       problems <- temp %>%
+         filter(N_rows != mode.N_rows) %>%
+         select(RecordID, N_rows, mode.N_rows) %>%
+         left_join(meta.MEGA.T21_visit1_Celiac02, by = "RecordID") %>%
+         select(FamilyID, RecordID, MEGA.IID, MEGA.LabID, N_rows, mode.N_rows) %>%
+         unique()
+       
+       print(problems)
+     }
+```
+
+#### If all of the following equal the same number of rows, then this dataframe now represents genotyping only once per individual
+```{r}
+meta.MEGA.T21_visit1_Celiac02 %>% filter(EXCLUDE_from_analysis == 0) %>%
+  select(FamilyID, RecordID, MEGA.IID, MEGA.LabID) %>%
+  unique() %>%
+  nrow()
+
+meta.MEGA.T21_visit1_Celiac02 %>% filter(EXCLUDE_from_analysis == 0) %>%
+  select(RecordID, MEGA.IID, MEGA.LabID) %>%
+  unique() %>%
+  nrow()
+
+meta.MEGA.T21_visit1_Celiac02 %>% filter(EXCLUDE_from_analysis == 0) %>%
+  select(MEGA.IID, MEGA.LabID) %>%
+  unique() %>%
+  nrow()
+
+meta.MEGA.T21_visit1_Celiac02 %>% filter(EXCLUDE_from_analysis == 0) %>%
+  select(MEGA.LabID) %>%
+  unique() %>%
+  nrow()
+
+meta.MEGA.T21_visit1_Celiac02 %>% filter(EXCLUDE_from_analysis == 0) %>%
+  select(MEGA.IID) %>%
+  unique() %>%
+  nrow()
+
+meta.MEGA.T21_visit1_Celiac02 %>% filter(EXCLUDE_from_analysis == 0) %>%
+  select(RecordID) %>%
+  unique() %>%
+  nrow()
+
+meta.MEGA.T21_visit1_Celiac02 %>% filter(EXCLUDE_from_analysis == 0) %>%
+  select(FamilyID, RecordID, MEGA.IID) %>%
+  unique() %>%
+  nrow()
+
+meta.MEGA.T21_visit1_Celiac02 %>% filter(EXCLUDE_from_analysis == 0) %>%
+  select(FamilyID, RecordID) %>%
+  unique() %>%
+  nrow()
+
+meta.MEGA.T21_visit1_Celiac02 %>% filter(EXCLUDE_from_analysis == 0) %>%
+  select(RecordID, MEGA.IID) %>%
+  unique() %>%
+  nrow()
+
+print("If all of the numbers printed above equal the same number of rows, then this dataframe now represents genotyping only once per individual.")
+print("Good.")
+```
+
+#### Final check that all RecordIDs now have only 1 MEGA.IID after using the EXCLUDE_from_analysis column to filter
+```{r}
+meta.MEGA.T21_visit1_Celiac02 %>% filter(EXCLUDE_from_analysis == 0) %>%
+  select(RecordID, MEGA.IID) %>%
+  unique() %>%
+  group_by(RecordID) %>%
+  summarise(N = n()) %>%
+  arrange(desc(N)) %>%
+  left_join(meta.MEGA.T21_visit1_Celiac02, by = "RecordID") %>%
+  filter(N > 1)
+
+print("Good. All RecordIDs have only 1 MEGA.IID after applying the EXCLUDE_from_analysis filter.")
+```
+
+#### Check for twins and other relateds
+#### If there are relateds in the dataset after applying the EXCLUDE filter, first prioritize keeping Celiac cases, then randomly choose one IID per FamilyID to retain for analysis
+```{r}
+meta.MEGA.T21_visit1_Celiac02 %>% filter(EXCLUDE_from_analysis == 0) %>%
+  select(FamilyID, RecordID) %>% #, MEGA.IID, MEGA.LabID) %>%
+  unique() %>%
+  group_by(FamilyID) %>%
+  summarise(N_RecordIDs_per_FamilyID = n()) %>%
+  ungroup() %>%
+  arrange(desc(N_RecordIDs_per_FamilyID)) %>%
+  filter(N_RecordIDs_per_FamilyID > 1)
+
+relateds <- meta.MEGA.T21_visit1_Celiac02 %>% filter(EXCLUDE_from_analysis == 0) %>%
+  select(FamilyID, RecordID) %>% #, MEGA.IID, MEGA.LabID) %>%
+  unique() %>%
+  group_by(FamilyID) %>%
+  summarise(N_RecordIDs_per_FamilyID = n()) %>%
+  ungroup() %>%
+  arrange(desc(N_RecordIDs_per_FamilyID)) %>%
+  filter(N_RecordIDs_per_FamilyID > 1) %>%
+  left_join(meta.MEGA.T21_visit1_Celiac02, by = "FamilyID") %>%
+  select(FamilyID, N_RecordIDs_per_FamilyID, RecordID, MEGA.IID, MEGA.LabID, EXCLUDE_from_analysis, Celiac, Sex, Age_at_visit1) %>%
+  unique() %>%
+  #left_join(meta_comorb.022021, by = c("FamilyID", "RecordID", "MEGA.LabID"="LabID")) %>%
+  group_by(FamilyID) %>%
+  arrange(desc(Celiac)) %>%
+  mutate(index_within_FamilyID = row_number()) %>%
+  ungroup() %>%
+  select(FamilyID, N_RecordIDs_per_FamilyID, index_within_FamilyID, Celiac, Sex, Age_at_visit1, everything()) %>%
+  arrange(FamilyID, index_within_FamilyID)
+
+relateds
+
+relateds %>%
+  select(FamilyID, index_within_FamilyID, EXCLUDE_from_analysis, Celiac, Sex) %>%
+  unique() %>%
+  group_by(FamilyID, Sex) %>%
+  summarise(N = n())
+
+print("Decision: From FamilyID F0348 (2 individuals), keep INVTH328HA9 because this person is a Celiac case.")
+print("Note: All other familys have only males or only females, except for one family with 1 of each.")
+print("Decision: Therefore, from all other FamilyIDs, randomly select one individual to remain in the analysis.")
+
+set.seed(1234) # Set seed for randomly shuffling rows
+relateds_to_keep = relateds[sample(1:nrow(relateds)), ] %>%
+  group_by(FamilyID) %>%
+  mutate(random_index = row_number()) %>%
+  ungroup() %>%
+  mutate(Keep = ifelse(FamilyID == "F0348" & Celiac == 1, 1,
+                       ifelse(FamilyID == "F0348" & Celiac == 0, 0,
+                              ifelse(random_index == 1, 1, 0)))) %>%
+  select(FamilyID, RecordID, MEGA.IID, MEGA.LabID, N_RecordIDs_per_FamilyID, index_within_FamilyID, random_index, Keep, everything()) %>%
+  arrange(FamilyID, index_within_FamilyID) %>%
+  filter(Keep == 1)
+relateds_to_keep
+relateds_to_keep$MEGA.IID
+```
+
+#### Update the `EXCLUDE_from_analysis` and `EXCLUDE_reason` columns to indicate which IIDs to exclude within multiple-IID FamilyIDs
+```{r}
+meta.MEGA.T21_visit1_Celiac03 <- meta.MEGA.T21_visit1_Celiac02 %>%
+  select(FamilyID, RecordID) %>% #, MEGA.IID, MEGA.LabID) %>%
+  unique() %>%
+  group_by(FamilyID) %>%
+  mutate(N_RecordIDs_per_FamilyID = n()) %>%
+  ungroup() %>%
+  arrange(desc(N_RecordIDs_per_FamilyID)) %>%
+  mutate(Multi_IID_FamilyID = ifelse(N_RecordIDs_per_FamilyID > 1, 1, 0)) %>%
+  left_join(meta.MEGA.T21_visit1_Celiac02, by = c("FamilyID", "RecordID")) %>%
+  mutate(Keep_from_Multi_IID_FamilyID = ifelse(MEGA.IID %in% relateds_to_keep$MEGA.IID, 1, 0)) %>%
+  mutate(EXCLUDE_reason = gsub("[.]", "", EXCLUDE_reason)) %>%
+  #filter(Multi_IID_FamilyID==1) %>% select(FamilyID, RecordID, N_RecordIDs_per_FamilyID, MEGA.IID, Keep_from_Multi_IID_FamilyID) %>% unique() %>% arrange(FamilyID, desc(Keep_from_Multi_IID_FamilyID))
+  mutate(EXCLUDE_from_analysis = ifelse(Multi_IID_FamilyID == 1 & Keep_from_Multi_IID_FamilyID == 0, 1, EXCLUDE_from_analysis),
+         EXCLUDE_reason = ifelse(is.na(EXCLUDE_reason) & Multi_IID_FamilyID == 1 & EXCLUDE_from_analysis == 1, "FamilyID with multiple RecordIDs",
+                                 ifelse(!is.na(EXCLUDE_reason) & 
+                                          Multi_IID_FamilyID == 1 &
+                                          EXCLUDE_from_analysis == 1,
+                                        paste(EXCLUDE_reason, "; FamilyID with multiple RecordIDs", sep = ""), EXCLUDE_reason))) %>%
+  select(-c(Keep_from_Multi_IID_FamilyID)) %>%
+  rename(N_T21_RecordIDs_in_FamilyID = N_RecordIDs_per_FamilyID) %>%
+  select(FamilyID, RecordID, MEGA.FID, MEGA.IID, MEGA.LabID, Multi_IID_FamilyID, N_T21_RecordIDs_in_FamilyID, everything()) #%>%
+  #mutate(EXCLUDE_from_analysis = ifelse(is.na(EXCLUDE_from_analysis), 0, EXCLUDE_from_analysis))
+
+meta.MEGA.T21_visit1_Celiac03
+
+meta.MEGA.T21_visit1_Celiac03 %>%
+  select(FamilyID, RecordID, MEGA.FID, MEGA.IID, MEGA.LabID,
+         Multi_IID_FamilyID, N_T21_RecordIDs_in_FamilyID, Celiac, EXCLUDE_from_analysis, EXCLUDE_reason) %>%
+  unique() %>%
+  arrange(desc(Celiac), desc(EXCLUDE_from_analysis))
+```
+
+#### Verify that the EXCLUDE variable is working correctly
+Not excluding any Celiac cases unless they represent a RecordID genotyped twice on MEGA.
+Producing a dataset with only one MEGA.IID per RecordID.
+Producing a dataset with only one RecordID per FamilyID.
+```{r}
+meta.MEGA.T21_visit1_Celiac03 %>%
+  select(MEGA.IID, MEGA.LabID, Celiac, EXCLUDE_from_analysis, EXCLUDE_reason) %>%
+  unique() %>%
+  group_by(Celiac, EXCLUDE_from_analysis, EXCLUDE_reason) %>%
+  summarise(N = n())
+print("Good, not excluding any Celiac cases unless they represent a RecordID genotyped twice on MEGA.")
+print("Reasons we are currently excluding IIDs represented in the plink *.fam are:
+      1) If the IID is for a RecordID that got genotyped twice, or
+      2) If the IID is from a FamilyID with multiple genotyped individuals.")
+
+meta.MEGA.T21_visit1_Celiac03 %>%
+  filter(EXCLUDE_from_analysis == 0) %>%
+  select(RecordID, MEGA.IID) %>%
+  unique() %>%
+  group_by(RecordID) %>%
+  summarise(N = n()) %>%
+  arrange(desc(N))
+print("Good, only one MEGA.IID per RecordID.")
+
+meta.MEGA.T21_visit1_Celiac03 %>%
+  #filter(EXCLUDE_from_analysis == 0) %>%
+  select(FamilyID, RecordID, MEGA.IID) %>%
+  unique() %>%
+  group_by(FamilyID, RecordID, MEGA.IID) %>%
+  summarise(N = n()) %>%
+  arrange(desc(N))
+print("Good, only one RecordID per FamilyID.")
+```
+
+#### View who is being excluded at this stage and why
+```{r}
+meta.MEGA.T21_visit1_Celiac03 %>%
+  select(FamilyID, RecordID, MEGA.FID, MEGA.IID, MEGA.LabID, Celiac, EXCLUDE_from_analysis, EXCLUDE_reason) %>%
+  unique() %>%
+  group_by(EXCLUDE_from_analysis, EXCLUDE_reason, Celiac) %>%
+  summarise(N = n())
+
+meta.MEGA.T21_visit1_Celiac03 %>%
+  select(FamilyID, RecordID, MEGA.FID, MEGA.IID, MEGA.LabID, EXCLUDE_from_analysis, EXCLUDE_reason, Karyotype, Celiac, Sex) %>%
+  unique() %>%
+  group_by(EXCLUDE_from_analysis, EXCLUDE_reason, Karyotype, Celiac, Sex) %>%
+  summarise(N = n()) %>%
+  ungroup() %>%
+  #filter(#EXCLUDE_from_analysis == 0 &
+  #         !is.na(Celiac)) %>%
+  mutate(Total = sum(N),
+         Pct = round(100*N/Total, digits = 2)) %>%
+  mutate(`N (%)` = paste(N, " (", Pct, ")", sep = "")) %>%
+  select(EXCLUDE_from_analysis, EXCLUDE_reason, Karyotype, Celiac, Sex, `N (%)`) %>%
+  mutate(Group = ifelse(Celiac == 0, "T21 without CD",
+                        ifelse(Celiac == 1, "T21 with CD", NA))) %>%
+  select(EXCLUDE_from_analysis, EXCLUDE_reason, Group, Sex, `N (%)`)
+```
+
+#### Save to files
+```{r}
+setwd(dir)
+fwrite(meta.MEGA.T21_visit1_Celiac03, "MEGA_041822_META_CeliacGRS_v0.1_JRS.csv")
+fwrite(meta.MEGA.T21_visit1_Celiac03, "MEGA_041822_META_CeliacGRS_v0.1_JRS.tsv", sep = "\t")
+```

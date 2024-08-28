@@ -1,0 +1,2278 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+#### Load frequently used packages
+```{r}
+library(skimr)
+library(openxlsx)
+library(ggrepel)
+library(dplyr)
+library(tidyr)
+library(data.table)
+library(broom)
+library(broomExtra)
+library(tibble)
+library(sjstats)
+library(car)
+library(lme4)
+library(lmerTest)
+library(ggplot2)
+library(tibble)
+library(modelr)
+library(tidyverse)
+#library(miceadds)
+library(ggforce)
+require(openxlsx)
+library(tidyverse)
+library(caret)
+library(glmnet)
+library(ggplot2)
+library(gridExtra)
+library(MASS) # rlm
+library(lmPerm)
+library(circlize)
+library(RColorBrewer)
+library(ComplexHeatmap)
+
+select <- dplyr::select
+filter <- dplyr::filter
+```
+
+#### Print session info for reproducibility
+```{r}
+sessionInfo()
+```
+
+#### Setting and modifying theme for plots
+```{r}
+theme_set(theme_gray(base_size = 12, base_family = "Arial") +
+            theme(panel.border = element_rect(colour="black", fill = "transparent"),
+                  plot.title = element_text(face="bold", hjust = 0), # lineheight=.8, size=20,
+                  axis.text = element_text(color="black", size = 11), #size = 14
+                  axis.text.x = element_text(angle = 0, hjust = NULL),
+                  strip.background = element_rect(colour="black", fill = "light grey", size = 1), # adjusts facet label borders (if any)
+                  panel.background = element_blank(),
+                  panel.grid = element_blank()
+          ))
+RedBlue <- c("#CD3333", "#1874CD")
+GrayBlue <- c("grey", "#2b8cbe")
+```
+
+```{bash}
+cp -a '/Users/shawjes/Dropbox/EspinosaGroup/ANALYSIS/Celiac_MultiOmics/GRS/DSMIG/051821_AbstractTable_HLADQ_Genotype_Frequencies_v0.1_JRS.xlsx' '/Users/shawjes/Dropbox/EspinosaGroup/ANALYSIS/Celiac_MultiOmics/GRS/DSMIG_Shared/Manuscript_Figure1/Data'
+```
+
+#### Define in/out directory
+```{r}
+dir <- '/Users/shawjes/Dropbox/EspinosaGroup/ANALYSIS/Celiac_MultiOmics/GRS/DSMIG_Shared/Manuscript_Figure1/Data'
+dir.PCA <- '/Users/shawjes/Dropbox/EspinosaGroup/ANALYSIS/Celiac_MultiOmics/GRS/DSMIG_Shared/Manuscript_Figure1/Data/PCA'
+dir.Results <- '/Users/shawjes/Dropbox/EspinosaGroup/ANALYSIS/Celiac_MultiOmics/GRS/DSMIG_Shared/Manuscript_Figure1/Results'
+dir.Plots <- '/Users/shawjes/Dropbox/EspinosaGroup/ANALYSIS/Celiac_MultiOmics/GRS/DSMIG_Shared/Manuscript_Figure1/Plots'
+dir.Tables <- '/Users/shawjes/Dropbox/EspinosaGroup/ANALYSIS/Celiac_MultiOmics/GRS/DSMIG_Shared/Manuscript_Figure1/Tables'
+```
+
+#### Read in frequencies for D21s as published in the Sharp paper
+#### Ignore the columns in this file pertaining to T21s, as we have updated these numbers above
+```{r}
+setwd(dir)
+HLADQ.freq_by_CD.D21 <- read.xlsx("051821_AbstractTable_HLADQ_Genotype_Frequencies_v0.1_JRS.xlsx") %>%
+  separate(Freq_Controls_T21, into = c("Freq_Controls_T21", "N_Controls_T21"), sep = " ", extra = "merge", remove = TRUE) %>%
+  separate(Freq_Cases_T21, into = c("Freq_Cases_T21", "N_Cases_T21"), sep = " ", extra = "merge", remove = TRUE) %>%
+  mutate(N_Controls_T21 = gsub("[(]n[=]", "", N_Controls_T21),
+         N_Controls_T21 = gsub("[)]", "", N_Controls_T21),
+         N_Cases_T21 = gsub("[(]n[=]", "", N_Cases_T21),
+         N_Cases_T21 = gsub("[)]", "", N_Cases_T21)) %>%
+  select(HLA_DQ_Genotype, Freq_Controls_T21, Freq_Cases_T21, Freq_Controls_D21, Freq_Cases_D21) %>%
+  unique() %>%
+  gather(key = "Group", value = "Frequency", Freq_Controls_T21:Freq_Cases_D21) %>%
+  mutate(Group = ifelse(Group == "Freq_Controls_T21", "T21 Controls",
+                        ifelse(Group == "Freq_Cases_T21", "T21 Cases",
+                               ifelse(Group == "Freq_Controls_D21", "D21 Controls",
+                                      ifelse(Group == "Freq_Cases_D21", "D21 Cases", NA))))) %>%
+  filter(grepl("T21", Group)==FALSE) %>%
+  mutate(Group = ifelse(Group == "D21 Controls", "-DS -CD",
+                        ifelse(Group == "D21 Cases", "-DS +CD", NA)))
+
+HLADQ.freq_by_CD.D21
+```
+
+#### Initialize an object to store the column names for the identifiers we want to keep in each analysis dataframe
+```{r}
+ID_colnames <- c("FamilyID", "RecordID", "MEGA.FID", "MEGA.IID", "MEGA.LabID")
+```
+
+#### Read in prepared metadata
+```{r}
+setwd(dir)
+analysis_meta <- fread("MEGA_041822_META_CeliacGRS_v0.1_JRS.csv") %>%
+  select(ID_colnames, Celiac, LabID, Celiac, EXCLUDE_from_analysis, EXCLUDE_reason) %>%
+  unique()
+
+analysis_meta
+```
+
+#### Read in prepared analysis datasets and keep only the IDs included in analysis
+```{r}
+setwd(dir)
+analysisData.GRS2019 <- fread("MEGA_041822_AnalysisData_CDGRS_Sharp2019_v0.1_JRS.csv") %>%
+  left_join(analysis_meta, by = ID_colnames) %>%
+  filter(EXCLUDE_from_analysis == 0)
+
+analysisData.GRS2022 <- fread("MEGA_041822_AnalysisData_CDGRS_Sharp2022_v0.1_JRS.csv") %>%
+  left_join(analysis_meta, by = ID_colnames) %>%
+  filter(EXCLUDE_from_analysis == 0)
+
+analysisData.GRS2019
+analysisData.GRS2022
+```
+
+#### Recall the number of Celiac cases and controls we have in our analysis cohort of T21s
+```{r}
+analysisData.GRS2019 %>%
+  select(RecordID, MEGA.IID, Celiac) %>%
+  unique() %>%
+  group_by(Celiac) %>%
+  summarise(N = n())
+
+analysisData.GRS2022 %>%
+  select(RecordID, MEGA.IID, Celiac) %>%
+  unique() %>%
+  group_by(Celiac) %>%
+  summarise(N = n())
+```
+
+#### Calculate frequencies of HLA-DQ genotypes in the analysis cohort of T21s
+##### For GRS 2019
+```{r}
+temp <- analysisData.GRS2019 %>%
+  rename(Variant = `Variant (Sharp 2019)`, Dosage = Dosage_for_GRS) %>%
+  mutate(Karyotype = ifelse(grepl("A", MEGA.LabID)==TRUE, "T21", "D21")) %>%
+  select(MEGA.IID, Variant, Dosage, Celiac, Karyotype) %>%
+  unique() %>%
+  mutate(Group = ifelse(Karyotype == "T21" & Celiac == 0, "DS without CD",
+                        ifelse(Karyotype == "T21" & Celiac == 1, "DS with CD", NA))) %>%
+  select(-c(Celiac)) %>%
+  group_by(Group, Variant, Dosage) %>%
+  summarise(N = n()) %>%
+  ungroup() %>%
+  filter((grepl("DQ", Variant)==TRUE | Variant=="X/X") & Dosage != 0) %>%
+  select(Variant, Group, N) %>%
+  spread(key = Group, value = N) %>%
+  # mutate(`DS without CD` = ifelse(is.na(`DS without CD`), 0, `DS without CD`),
+  #        `DS with CD` = ifelse(is.na(`DS with CD`), 0, `DS with CD`)) %>%
+  rename(HLA_DQ_Genotype = Variant) %>%
+  full_join(HLADQ.freq_by_CD.D21 %>% select(HLA_DQ_Genotype) %>% unique() %>% mutate(row_num = row_number()), by = c("HLA_DQ_Genotype")) %>%
+  mutate(`DS without CD` = ifelse(is.na(`DS without CD`), 0, `DS without CD`),
+         `DS with CD` = ifelse(is.na(`DS with CD`), 0, `DS with CD`)) %>%
+  arrange(row_num) %>%
+  select(-c(row_num))
+
+temp
+
+HLADQ.freq_by_CD.T21.GRS2019 <- temp %>%
+  mutate(Total_DS_without_CD = sum(temp$`DS without CD`),
+         Total_DS_with_CD = sum(temp$`DS with CD`)) %>%
+  mutate(Freq_among_DS_without_CD = round(`DS without CD`/Total_DS_without_CD, digits = 4),
+         Freq_among_DS_with_CD = round(`DS with CD`/Total_DS_with_CD, digits = 4)) %>%
+  mutate(`Frequency among DS without CD (%)` = paste(`DS without CD`, " (", Freq_among_DS_without_CD, ")", sep = ""),
+         `Frequency among DS with CD (%)` = paste(`DS with CD`, " (", Freq_among_DS_with_CD, ")", sep = "")) %>%
+  select(HLA_DQ_Genotype, `Frequency among DS without CD (%)`, `Frequency among DS with CD (%)`) %>%
+  rename(`HLA-DQ genotype` = HLA_DQ_Genotype) %>%
+  `colnames<-`(c("HLA-DQ genotype", "+DS -CD", "+DS +CD")) %>%
+  gather(key = "Group", value = "Frequency", `+DS -CD`:`+DS +CD`) %>%
+  separate(Frequency, into = c("N", "Frequency"), sep = " [(]", extra = "merge", remove = TRUE) %>%
+  mutate(Frequency = gsub("[)]", "", Frequency))
+
+HLADQ.freq_by_CD.T21.GRS2019
+```
+
+##### For GRS 2022
+```{r}
+temp <- analysisData.GRS2022 %>%
+  rename(Variant = `Variant (Sharp 2022)`, Dosage = Dosage_for_GRS) %>%
+  mutate(Karyotype = ifelse(grepl("A", MEGA.LabID)==TRUE, "T21", "D21")) %>%
+  select(MEGA.IID, Variant, Dosage, Celiac, Karyotype) %>%
+  unique() %>%
+  mutate(Group = ifelse(Karyotype == "T21" & Celiac == 0, "DS without CD",
+                        ifelse(Karyotype == "T21" & Celiac == 1, "DS with CD", NA))) %>%
+  select(-c(Celiac)) %>%
+  group_by(Group, Variant, Dosage) %>%
+  summarise(N = n()) %>%
+  ungroup() %>%
+  filter((grepl("DQ", Variant)==TRUE | Variant=="X/X") & Dosage != 0) %>%
+  select(Variant, Group, N) %>%
+  spread(key = Group, value = N) %>%
+  # mutate(`DS without CD` = ifelse(is.na(`DS without CD`), 0, `DS without CD`),
+  #        `DS with CD` = ifelse(is.na(`DS with CD`), 0, `DS with CD`)) %>%
+  rename(HLA_DQ_Genotype = Variant) %>%
+  full_join(HLADQ.freq_by_CD.D21 %>% select(HLA_DQ_Genotype) %>% unique() %>% mutate(row_num = row_number()), by = c("HLA_DQ_Genotype")) %>%
+  mutate(`DS without CD` = ifelse(is.na(`DS without CD`), 0, `DS without CD`),
+         `DS with CD` = ifelse(is.na(`DS with CD`), 0, `DS with CD`)) %>%
+  arrange(row_num) %>%
+  select(-c(row_num))
+
+temp
+
+HLADQ.freq_by_CD.T21.GRS2022 <- temp %>%
+  mutate(Total_DS_without_CD = sum(temp$`DS without CD`),
+         Total_DS_with_CD = sum(temp$`DS with CD`)) %>%
+  mutate(Freq_among_DS_without_CD = round(`DS without CD`/Total_DS_without_CD, digits = 4),
+         Freq_among_DS_with_CD = round(`DS with CD`/Total_DS_with_CD, digits = 4)) %>%
+  mutate(`Frequency among DS without CD (%)` = paste(`DS without CD`, " (", Freq_among_DS_without_CD, ")", sep = ""),
+         `Frequency among DS with CD (%)` = paste(`DS with CD`, " (", Freq_among_DS_with_CD, ")", sep = "")) %>%
+  select(HLA_DQ_Genotype, `Frequency among DS without CD (%)`, `Frequency among DS with CD (%)`) %>%
+  rename(`HLA-DQ genotype` = HLA_DQ_Genotype) %>%
+  `colnames<-`(c("HLA-DQ genotype", "+DS -CD", "+DS +CD")) %>%
+  gather(key = "Group", value = "Frequency", `+DS -CD`:`+DS +CD`) %>%
+  separate(Frequency, into = c("N", "Frequency"), sep = " [(]", extra = "merge", remove = TRUE) %>%
+  mutate(Frequency = gsub("[)]", "", Frequency))
+
+HLADQ.freq_by_CD.T21.GRS2022
+```
+
+#### Create a table that shows frequency of each HLA-DQ genotype among +/-DS +/-CD; Verify that within-group frequencies sum to 1; Output to file
+##### GRS 2019
+```{r}
+`Permissive, high risk` = c("DQ2.5/DQ2.5", "DQ2.5/DQ2.2", "DQ7.5/DQ2.5")
+`Permissive, intermediate risk` = c("DQ2.5/DQ8", "DQ7.5/DQ2.2", "DQ2.5/X", "DQ8/DQ8", "DQ2.2/DQ8", "DQ7.5/DQ8", "DQ8/X")
+`Permissive low risk` = c("DQ2.2/X", "DQ2.2/DQ2.2")
+`Non-permissive` = c("DQ7.5/DQ7.5", "DQ7.5/X", "X/X")
+
+HLADQ_freq_by_CD.D21.T21.long.GRS2019 <- rbind(HLADQ.freq_by_CD.D21 %>%
+                                         rename(`HLA-DQ genotype` = HLA_DQ_Genotype) %>%
+                                         mutate(N = NA) %>%
+                                         select(`HLA-DQ genotype`, Group, N, Frequency),
+                                       HLADQ.freq_by_CD.T21.GRS2019
+                                       ) %>%
+  mutate(Frequency = as.numeric(Frequency)) %>%
+  mutate(Genotype_category = ifelse(`HLA-DQ genotype` %in% `Permissive, high risk`, "Permissive, high risk",
+                                   ifelse(`HLA-DQ genotype` %in% `Permissive, intermediate risk`, "Permissive, intermediate risk",
+                                          ifelse(`HLA-DQ genotype` %in% `Permissive low risk`, "Permissive, low risk",
+                                                 ifelse(`HLA-DQ genotype` %in% `Non-permissive`, "Non-permissive", NA)))),
+         `HLA-DQ genotype` = factor(`HLA-DQ genotype`,
+                                    levels = c("DQ2.5/DQ2.5", "DQ2.5/DQ2.2", "DQ7.5/DQ2.5",
+                                               "DQ2.5/DQ8", "DQ7.5/DQ2.2", "DQ2.5/X", "DQ8/DQ8", "DQ2.2/DQ8", "DQ7.5/DQ8", "DQ8/X",
+                                               "DQ2.2/X", "DQ2.2/DQ2.2",
+                                               "DQ7.5/DQ7.5", "DQ7.5/X", "X/X"))) 
+
+HLADQ_freq_by_CD.D21.T21.wide.GRS2019 <- HLADQ_freq_by_CD.D21.T21.long.GRS2019 %>%
+  mutate(Frequency = ifelse(!is.na(N), paste(Frequency, " (n=", N, ")", sep = ""), Frequency)) %>%
+  select(-N) %>%
+  spread(key = Group, value = Frequency)
+
+HLADQ_freq_by_CD.D21.T21.long.GRS2019
+HLADQ_freq_by_CD.D21.T21.wide.GRS2019
+
+print("Verifying that within-group frequencies sum to 1:")
+print( paste("Frequencies among +DS -CD sum to ", (HLADQ_freq_by_CD.D21.T21.long.GRS2019 %>% filter(Group == "+DS -CD"))$Frequency %>% sum(), ".", sep = "") )
+print( paste("Frequencies among +DS +CD sum to ", (HLADQ_freq_by_CD.D21.T21.long.GRS2019 %>% filter(Group == "+DS +CD"))$Frequency %>% sum(), ".", sep = "") )
+print( paste("Frequencies among -DS -CD sum to ", (HLADQ_freq_by_CD.D21.T21.long.GRS2019 %>% filter(Group == "-DS -CD"))$Frequency %>% sum(), ".", sep = "") )
+print( paste("Frequencies among -DS +CD sum to ", (HLADQ_freq_by_CD.D21.T21.long.GRS2019 %>% filter(Group == "-DS +CD"))$Frequency %>% sum(), ".", sep = "") )
+
+setwd(dir.Tables)
+fwrite(HLADQ_freq_by_CD.D21.T21.long.GRS2019 %>%
+         # Add a space before the group abbreviations to prevent errors when opening in Excel:
+         mutate(Group = paste(" ", Group, " ", sep = "")),
+       "MEGA_041822_HLADQgenotype_FreqByCDandDS_LONG_v0.1_JRS.csv")
+fwrite(HLADQ_freq_by_CD.D21.T21.long.GRS2019 %>%
+         # Add a space before the group abbreviations to prevent errors when opening in Excel:
+         mutate(Group = paste(" ", Group, " ", sep = "")),
+       "MEGA_041822_CDGRS2019_HLADQgenotype_FreqByCDandDS_LONG_v0.1_JRS.tsv", sep = "\t")
+
+setwd(dir.Tables)
+fwrite(HLADQ_freq_by_CD.D21.T21.wide.GRS2019 %>%
+         # Add a space before the group abbreviations to prevent errors when opening in Excel:
+         `colnames<-`(c("HLA-DQ genotype", "Genotype category",
+                        " -DS -CD ",
+                        " -DS +CD ",
+                        " +DS -CD ",
+                        " +DS +CD ")),
+       "MEGA_041822_CDGRS2019_HLADQgenotype_FreqByCDandDS_WIDE_v0.1_JRS.csv")
+fwrite(HLADQ_freq_by_CD.D21.T21.wide.GRS2019 %>%
+         # Add a space before the group abbreviations to prevent errors when opening in Excel:
+         `colnames<-`(c("HLA-DQ genotype", "Genotype category",
+                        " -DS -CD ",
+                        " -DS +CD ",
+                        " +DS -CD ",
+                        " +DS +CD ")),
+       "MEGA_041822_CDGRS2019_HLADQgenotype_FreqByCDandDS_WIDE_v0.1_JRS.tsv", sep = "\t")
+```
+
+##### GRS 2022
+```{r}
+`Permissive, high risk` = c("DQ2.5/DQ2.5", "DQ2.5/DQ2.2", "DQ7.5/DQ2.5")
+`Permissive, intermediate risk` = c("DQ2.5/DQ8", "DQ7.5/DQ2.2", "DQ2.5/X", "DQ8/DQ8", "DQ2.2/DQ8", "DQ7.5/DQ8", "DQ8/X")
+`Permissive low risk` = c("DQ2.2/X", "DQ2.2/DQ2.2")
+`Non-permissive` = c("DQ7.5/DQ7.5", "DQ7.5/X", "X/X")
+
+HLADQ_freq_by_CD.D21.T21.long.GRS2022 <- rbind(HLADQ.freq_by_CD.D21 %>%
+                                         rename(`HLA-DQ genotype` = HLA_DQ_Genotype) %>%
+                                         mutate(N = NA) %>%
+                                         select(`HLA-DQ genotype`, Group, N, Frequency),
+                                       HLADQ.freq_by_CD.T21.GRS2022
+                                       ) %>%
+  mutate(Frequency = as.numeric(Frequency)) %>%
+  mutate(Genotype_category = ifelse(`HLA-DQ genotype` %in% `Permissive, high risk`, "Permissive, high risk",
+                                   ifelse(`HLA-DQ genotype` %in% `Permissive, intermediate risk`, "Permissive, intermediate risk",
+                                          ifelse(`HLA-DQ genotype` %in% `Permissive low risk`, "Permissive, low risk",
+                                                 ifelse(`HLA-DQ genotype` %in% `Non-permissive`, "Non-permissive", NA)))),
+         `HLA-DQ genotype` = factor(`HLA-DQ genotype`,
+                                    levels = c("DQ2.5/DQ2.5", "DQ2.5/DQ2.2", "DQ7.5/DQ2.5",
+                                               "DQ2.5/DQ8", "DQ7.5/DQ2.2", "DQ2.5/X", "DQ8/DQ8", "DQ2.2/DQ8", "DQ7.5/DQ8", "DQ8/X",
+                                               "DQ2.2/X", "DQ2.2/DQ2.2",
+                                               "DQ7.5/DQ7.5", "DQ7.5/X", "X/X"))) 
+
+HLADQ_freq_by_CD.D21.T21.wide.GRS2022 <- HLADQ_freq_by_CD.D21.T21.long.GRS2022 %>%
+  mutate(Frequency = ifelse(!is.na(N), paste(Frequency, " (n=", N, ")", sep = ""), Frequency)) %>%
+  select(-N) %>%
+  spread(key = Group, value = Frequency)
+
+HLADQ_freq_by_CD.D21.T21.long.GRS2022
+HLADQ_freq_by_CD.D21.T21.wide.GRS2022
+
+print("Verifying that within-group frequencies sum to 1:")
+print( paste("Frequencies among +DS -CD sum to ", (HLADQ_freq_by_CD.D21.T21.long.GRS2022 %>% filter(Group == "+DS -CD"))$Frequency %>% sum(), ".", sep = "") )
+print( paste("Frequencies among +DS +CD sum to ", (HLADQ_freq_by_CD.D21.T21.long.GRS2022 %>% filter(Group == "+DS +CD"))$Frequency %>% sum(), ".", sep = "") )
+print( paste("Frequencies among -DS -CD sum to ", (HLADQ_freq_by_CD.D21.T21.long.GRS2022 %>% filter(Group == "-DS -CD"))$Frequency %>% sum(), ".", sep = "") )
+print( paste("Frequencies among -DS +CD sum to ", (HLADQ_freq_by_CD.D21.T21.long.GRS2022 %>% filter(Group == "-DS +CD"))$Frequency %>% sum(), ".", sep = "") )
+
+setwd(dir.Tables)
+fwrite(HLADQ_freq_by_CD.D21.T21.long.GRS2022 %>%
+         # Add a space before the group abbreviations to prevent errors when opening in Excel:
+         mutate(Group = paste(" ", Group, " ", sep = "")),
+       "MEGA_041822_HLADQgenotype_FreqByCDandDS_LONG_v0.1_JRS.csv")
+fwrite(HLADQ_freq_by_CD.D21.T21.long.GRS2022 %>%
+         # Add a space before the group abbreviations to prevent errors when opening in Excel:
+         mutate(Group = paste(" ", Group, " ", sep = "")),
+       "MEGA_041822_CDGRS2022_HLADQgenotype_FreqByCDandDS_LONG_v0.1_JRS.tsv", sep = "\t")
+
+setwd(dir.Tables)
+fwrite(HLADQ_freq_by_CD.D21.T21.wide.GRS2022 %>%
+         # Add a space before the group abbreviations to prevent errors when opening in Excel:
+         `colnames<-`(c("HLA-DQ genotype", "Genotype category",
+                        " -DS -CD ",
+                        " -DS +CD ",
+                        " +DS -CD ",
+                        " +DS +CD ")),
+       "MEGA_041822_CDGRS2022_HLADQgenotype_FreqByCDandDS_WIDE_v0.1_JRS.csv")
+fwrite(HLADQ_freq_by_CD.D21.T21.wide.GRS2022 %>%
+         # Add a space before the group abbreviations to prevent errors when opening in Excel:
+         `colnames<-`(c("HLA-DQ genotype", "Genotype category",
+                        " -DS -CD ",
+                        " -DS +CD ",
+                        " +DS -CD ",
+                        " +DS +CD ")),
+       "MEGA_041822_CDGRS2022_HLADQgenotype_FreqByCDandDS_WIDE_v0.1_JRS.tsv", sep = "\t")
+```
+
+
+
+
+
+#### Prepare long format for input to ggplot
+```{r}
+#display.brewer.all()
+#display.brewer.pal(name = "Spectral", n = 9)
+
+plotData.HLADQ_freq.GRS2019 <- HLADQ_freq_by_CD.D21.T21.long.GRS2019 %>%
+  mutate(`Frequency (%)` = 100*as.numeric(Frequency)) %>%
+  select(`HLA-DQ genotype`, Genotype_category, Group, `Frequency (%)`, N) %>%
+  arrange(`HLA-DQ genotype`) %>%
+  mutate(Group = gsub(" ", "\n", Group),
+         Group = factor(Group, levels = c("-DS\n-CD", "+DS\n-CD", "-DS\n+CD", "+DS\n+CD")))
+
+plotData.HLADQ_freq.GRS2019
+
+plotData.HLADQ_freq.GRS2019 %>% select(`HLA-DQ genotype`, Genotype_category) %>% unique()
+
+
+
+plotData.HLADQ_freq.GRS2022 <- HLADQ_freq_by_CD.D21.T21.long.GRS2022 %>%
+  mutate(`Frequency (%)` = 100*as.numeric(Frequency)) %>%
+  select(`HLA-DQ genotype`, Genotype_category, Group, `Frequency (%)`, N) %>%
+  arrange(`HLA-DQ genotype`) %>%
+  mutate(Group = gsub(" ", "\n", Group),
+         Group = factor(Group, levels = c("-DS\n-CD", "+DS\n-CD", "-DS\n+CD", "+DS\n+CD")))
+
+plotData.HLADQ_freq.GRS2022
+
+plotData.HLADQ_freq.GRS2022 %>% select(`HLA-DQ genotype`, Genotype_category) %>% unique()
+```
+
+#### Make stacked barplot of HLA-DQ genotype frequencies
+```{r}
+# Setting and modifying theme for plots
+theme_set(theme_gray(base_size = 12, base_family = "Arial") +
+            theme(panel.border = element_rect(colour="black", fill = "transparent"),
+                  plot.title = element_text(face="bold", hjust = 0, size = 12), # lineheight=.8, size=20,
+                  axis.text = element_text(color="black", size = 12), 
+                  axis.text.x = element_text(angle = 0, hjust = NULL),
+                  strip.background = element_rect(colour="black", fill = "light grey", size = 1), # adjusts facet label borders (if any)
+                  panel.background = element_blank(),
+                  panel.grid = element_blank()
+          ))
+
+purples <- brewer.pal(n = 9, name = "BuPu")[c(6,8,9)] %>% rev()
+deeppinks <- c("deeppink4", "deeppink3", "deeppink2")
+darkorchids <- c("darkorchid4", "darkorchid3", "darkorchid")
+blues <- brewer.pal(n = 9, name = "Blues")[3:9] %>% rev()
+oranges <- brewer.pal(n = 11, name = "Spectral")[3:4] %>% rev()
+greens <- brewer.pal(n = 11, name = "Spectral")[7:9]
+option6 <- c(darkorchids, blues, oranges, greens)
+
+plotData.HLADQ_freq.GRS2019 %>%
+  #mutate(Group = gsub(" ", "\n", Group)) %>%
+  ggplot(aes(x = Group, y = `Frequency (%)`, color = `HLA-DQ genotype`, fill = `HLA-DQ genotype`)) +
+  geom_bar(position = "stack", stat = "identity") +
+  xlab("") +
+  ylab("Frequency (%)") +
+  theme(legend.title = element_blank(),
+        aspect.ratio = 1) +
+  scale_colour_manual(values = option6) +
+  scale_fill_manual(values = option6) +
+  ggtitle("HLA-DQ genotype frequency by karyotype and Celiac status")
+
+setwd(dir.Figures)
+filename <- "MEGA_041822_CDGRS2019_StackedBarplot_HLADQ_Genotype_Frequencies_v0.1_JRS"
+ggsave(filename = paste(filename, ".png", sep = ""),
+       width = 7, height = 5, units = "in")
+ggsave(filename = paste(filename, ".pdf", sep = ""),
+       device = cairo_pdf, width = 7, height = 5, units = "in")
+
+plotData.HLADQ_freq.GRS2022 %>%
+  #mutate(Group = gsub(" ", "\n", Group)) %>%
+  ggplot(aes(x = Group, y = `Frequency (%)`, color = `HLA-DQ genotype`, fill = `HLA-DQ genotype`)) +
+  geom_bar(position = "stack", stat = "identity") +
+  xlab("") +
+  ylab("Frequency (%)") +
+  theme(legend.title = element_blank(),
+        aspect.ratio = 1) +
+  scale_colour_manual(values = option6) +
+  scale_fill_manual(values = option6) +
+  ggtitle("HLA-DQ genotype frequency by karyotype and Celiac status")
+
+setwd(dir.Figures)
+filename <- "MEGA_041822_CDGRS2022_StackedBarplot_HLADQ_Genotype_Frequencies_v0.1_JRS"
+ggsave(filename = paste(filename, ".png", sep = ""),
+       width = 7, height = 5, units = "in")
+ggsave(filename = paste(filename, ".pdf", sep = ""),
+       device = cairo_pdf, width = 7, height = 5, units = "in")
+```
+
+#### Make stacked barplot of HLA-DQ genotype frequencies
+```{r}
+purples <- brewer.pal(n = 9, name = "BuPu")[c(6,8,9)] %>% rev()
+deeppinks <- c("deeppink4", "deeppink3", "deeppink2")
+darkorchids <- c("darkorchid4", "darkorchid3", "darkorchid")
+blues <- brewer.pal(n = 9, name = "Blues")[3:9] %>% rev()
+oranges <- brewer.pal(n = 11, name = "Spectral")[3:4] %>% rev()
+greens <- brewer.pal(n = 11, name = "Spectral")[7:9]
+option6 <- c(darkorchids, blues, oranges, greens)
+```
+
+#### Red/Blue option
+```{r}
+# Setting and modifying theme for plots
+theme_set(theme_gray(base_size = 12, base_family = "Arial") +
+            theme(panel.border = element_rect(colour="black", fill = "transparent"),
+                  plot.title = element_text(face="bold", hjust = 0, size = 12), # lineheight=.8, size=20,
+                  axis.text = element_text(color="black", size = 12), 
+                  axis.text.x = element_text(angle = 0, hjust = NULL),
+                  strip.background = element_rect(colour="black", fill = "light grey", size = 1), # adjusts facet label borders (if any)
+                  panel.background = element_blank(),
+                  panel.grid = element_blank()
+          ))
+
+# # Pretty good:
+# rev(colfunc.Reds(12)) %>% tail(n=12)
+# colfunc.Reds <- colorRampPalette(c(brewer.pal(n = 9, name = "Reds")[1],
+#                                    brewer.pal(n=9, name = "Reds")[8]))
+# colfunc.Blues <- colorRampPalette(c("white", "#08519C"))
+# custom.RedBlue1 <- c( rev(colfunc.Reds(15)[15]),
+#                      rev(colfunc.Reds(15)[2:13]),
+#                      colfunc.Blues(6) %>% tail(n=3) )
+# custom.RedBlue2 <- c( rev(colfunc.Reds(15)[15]),
+#                      rev(colfunc.Reds(15) %>% tail(n=11)),
+#                      colfunc.Blues(6) %>% tail(n=3) )
+# custom.RedBlue3 <- c( rev(colfunc.Reds(15)[15]),
+#                      rev(colfunc.Reds(15)[1:12]),
+#                      colfunc.Blues(6) %>% tail(n=3) )
+# custom.RedBlue4 <- c( rev(colfunc.Reds(15)[15]),
+#                      rev(colfunc.Reds(15)[3:14]),
+#                      colfunc.Blues(6) %>% tail(n=3) )
+
+# colfunc.RdOr <- colorRampPalette(c(brewer.pal(n = 9, name = "OrRd")[3],
+#                                    brewer.pal(n=9, name = "Reds")[7]))
+# colfunc.Blues <- colorRampPalette(c("white", "#08519C"))
+# colfunc.Reds <- colorRampPalette(c(brewer.pal(n = 9, name = "Reds")[1],
+#                                    brewer.pal(n=9, name = "Reds")[8]))
+# custom.RdOrBlue <- c( rev(colfunc.Reds(15)[15]),
+#                       rev(colfunc.RdOr(12)) %>% tail(n=11),
+#                      colfunc.Blues(6) %>% tail(n=3) )
+# custom.RedBlue <- c( rev(colfunc.Reds(15)[15]),
+#                      rev(colfunc.Reds(15)[2:13]),
+#                      colfunc.Blues(6) %>% tail(n=3) )
+
+# plotData.HLADQ_freq %>%
+#   mutate(Permissive = ifelse(grepl("Non-permissive", Genotype_category)==TRUE, 0, 1),
+#          Permissive = factor(Permissive, levels = c(0,1)),
+#          Genotype_category = factor(Genotype_category,
+#                                     levels = c("Non-permissive", "Permissive, low risk", "Permissive, intermediate risk", "Permissive, high risk")),
+#          Genotype_category.num = as.numeric(Genotype_category)) %>%
+#   mutate(Group = gsub(" ", "\n", Group)) %>%
+#   ggplot(aes(x = Group, y = `Frequency (%)`, color = `HLA-DQ genotype`, fill = `HLA-DQ genotype`)) +
+#   geom_bar(position = "stack", stat = "identity") +
+#   xlab("") +
+#   ylab("Frequency (%)") +
+#   theme(legend.title = element_blank(),
+#         aspect.ratio = 1) +
+#   scale_colour_manual(values = custom.RedBlue1) +
+#   scale_fill_manual(values = custom.RedBlue1) +
+#   ggtitle("HLA-DQ genotype frequency by karyotype and Celiac status") # +
+
+# plotData.HLADQ_freq %>%
+#   mutate(Permissive = ifelse(grepl("Non-permissive", Genotype_category)==TRUE, 0, 1),
+#          Permissive = factor(Permissive, levels = c(0,1)),
+#          Genotype_category = factor(Genotype_category,
+#                                     levels = c("Non-permissive", "Permissive, low risk", "Permissive, intermediate risk", "Permissive, high risk")),
+#          Genotype_category.num = as.numeric(Genotype_category)) %>%
+#   mutate(Group = gsub(" ", "\n", Group)) %>%
+#   ggplot(aes(x = Group, y = `Frequency (%)`, color = `HLA-DQ genotype`, fill = `HLA-DQ genotype`)) +
+#   geom_bar(position = "stack", stat = "identity") +
+#   xlab("") +
+#   ylab("Frequency (%)") +
+#   theme(legend.title = element_blank(),
+#         aspect.ratio = 1) +
+#   scale_colour_manual(values = custom.RedBlue3) +
+#   scale_fill_manual(values = custom.RedBlue3) +
+#   ggtitle("HLA-DQ genotype frequency by karyotype and Celiac status") # +
+
+# plotData.HLADQ_freq %>%
+#   mutate(Permissive = ifelse(grepl("Non-permissive", Genotype_category)==TRUE, 0, 1),
+#          Permissive = factor(Permissive, levels = c(0,1)),
+#          Genotype_category = factor(Genotype_category,
+#                                     levels = c("Non-permissive", "Permissive, low risk", "Permissive, intermediate risk", "Permissive, high risk")),
+#          Genotype_category.num = as.numeric(Genotype_category)) %>%
+#   mutate(Group = gsub(" ", "\n", Group)) %>%
+#   ggplot(aes(x = Group, y = `Frequency (%)`, color = `HLA-DQ genotype`, fill = `HLA-DQ genotype`)) +
+#   geom_bar(position = "stack", stat = "identity") +
+#   xlab("") +
+#   ylab("Frequency (%)") +
+#   theme(legend.title = element_blank(),
+#         aspect.ratio = 1) +
+#   scale_colour_manual(values = custom.RedBlue4) +
+#   scale_fill_manual(values = custom.RedBlue4) +
+#   ggtitle("HLA-DQ genotype frequency by karyotype and Celiac status") # +
+
+colfunc.RdOr <- colorRampPalette(c(brewer.pal(n = 9, name = "OrRd")[3],
+                                   brewer.pal(n=9, name = "Reds")[7]))
+colfunc.Blues <- colorRampPalette(c("white", "#08519C"))
+colfunc.Reds <- colorRampPalette(c(brewer.pal(n = 9, name = "Reds")[1],
+                                   brewer.pal(n=9, name = "Reds")[8]))
+custom.RedBlue3 <- c( rev(colfunc.Reds(15)[15]),
+                     rev(colfunc.Reds(15)[2:12]),
+                     colfunc.Blues(6) %>% tail(n=3) )
+length(custom.RedBlue3)
+stacked.DQfreq.RedBlue <- plotData.HLADQ_freq %>%
+  # mutate(Permissive = ifelse(grepl("Non-permissive", Genotype_category)==TRUE, 0, 1),
+  #        Permissive = factor(Permissive, levels = c(0,1)),
+  #        Genotype_category = factor(Genotype_category,
+  #                                   levels = c("Non-permissive", "Permissive, low risk", "Permissive, intermediate risk", "Permissive, high risk")),
+  #        Genotype_category.num = as.numeric(Genotype_category)) %>%
+  # mutate(Group = gsub(" ", "\n", Group),
+  #        Group = factor(Group, levels = c("-DS\n+CD", "+DS\n+CD", "-DS\n-CD", "+DS\n-CD"))) %>%
+  ggplot(aes(x = Group, y = `Frequency (%)`, color = `HLA-DQ genotype`, fill = `HLA-DQ genotype`)) +
+  geom_bar(position = "stack", stat = "identity") +
+  xlab("") +
+  ylab("Frequency (%)") +
+  theme(legend.title = element_blank(),
+        aspect.ratio = 1) +
+  scale_colour_manual(values = custom.RedBlue3) +
+  scale_fill_manual(values = custom.RedBlue3) +
+  ggtitle("HLA-DQ genotype frequency by karyotype and Celiac status") # +
+
+stacked.DQfreq.RedBlue
+
+setwd(dir.Figures)
+filename <- "MEGA_022322_StackedBarplot_HLADQ_Genotype_Frequencies_RedBlue_v0.1_JRS"
+ggsave(stacked.DQfreq.RedBlue,
+       filename = paste(filename, ".png", sep = ""),
+       width = 7, height = 5, units = "in")
+ggsave(stacked.DQfreq.RedBlue,
+       filename = paste(filename, ".pdf", sep = ""),
+       device = cairo_pdf, width = 7, height = 5, units = "in")
+```
+
+#### Red/Orange/Blue option
+```{r}
+theme_set(theme_gray(base_size = 12, base_family = "Arial") +
+            theme(panel.border = element_rect(colour="black", fill = "transparent"),
+                  plot.title = element_text(face="bold", hjust = 0, size = 12), # lineheight=.8, size=20,
+                  axis.text = element_text(color="black", size = 12), 
+                  axis.text.x = element_text(angle = 0, hjust = NULL),
+                  strip.background = element_rect(colour="black", fill = "light grey", size = 1), # adjusts facet label borders (if any)
+                  panel.background = element_blank(),
+                  panel.grid = element_blank()
+          ))
+# brewer.pal(n = 12, name = "OrRd")
+# display.brewer.pal(n=9, name = "OrRd")
+# rev(colfunc.Reds(12)) %>% tail(n=12)
+# brewer.pal(n = 12, name = "OrRd")
+custom.RedBlue3 <- c( rev(colfunc.Reds(15)[15]),
+                     rev(colfunc.Reds(15)[2:12]),
+                     colfunc.Blues(6) %>% tail(n=3) )
+colfunc.RdOr <- colorRampPalette(c(brewer.pal(n = 9, name = "OrRd")[3],
+                                   brewer.pal(n=9, name = "Reds")[7]))
+colfunc.Blues <- colorRampPalette(c("white", "#08519C"))
+colfunc.Reds <- colorRampPalette(c(brewer.pal(n = 9, name = "Reds")[1],
+                                   brewer.pal(n=9, name = "Reds")[8]))
+custom.RdOrBlue <- c( rev(colfunc.Reds(15)[15]),
+                      rev(colfunc.RdOr(12)) %>% tail(n=11),
+                     colfunc.Blues(6) %>% tail(n=3) )
+custom.RedBlue <- c( rev(colfunc.Reds(15)[15]),
+                     rev(colfunc.Reds(15)[2:12]),
+                     colfunc.Blues(6) %>% tail(n=3) )
+length(custom.RedBlue)
+stacked.DQfreq.RedOrBlue <- plotData.HLADQ_freq %>%
+  # mutate(Permissive = ifelse(grepl("Non-permissive", Genotype_category)==TRUE, 0, 1),
+  #        Permissive = factor(Permissive, levels = c(0,1)),
+  #        Genotype_category = factor(Genotype_category,
+  #                                   levels = c("Non-permissive", "Permissive, low risk", "Permissive, intermediate risk", "Permissive, high risk")),
+  #        Genotype_category.num = as.numeric(Genotype_category)) %>%
+  # mutate(Group = gsub(" ", "\n", Group),
+  #        Group = factor(Group, levels = c("-DS\n+CD", "+DS\n+CD", "-DS\n-CD", "+DS\n-CD"))) %>%
+  ggplot(aes(x = Group, y = `Frequency (%)`, color = `HLA-DQ genotype`, fill = `HLA-DQ genotype`)) +
+  geom_bar(position = "stack", stat = "identity") +
+  xlab("") +
+  ylab("Frequency (%)") +
+  theme(legend.title = element_blank(),
+        aspect.ratio = 1) +
+  scale_colour_manual(values = custom.RdOrBlue) +
+  scale_fill_manual(values = custom.RdOrBlue) +
+  ggtitle("HLA-DQ genotype frequency by karyotype and Celiac status") # +
+
+stacked.DQfreq.RedOrBlue
+
+setwd(dir.Figures)
+filename <- "MEGA_022322_StackedBarplot_HLADQ_Genotype_Frequencies_RedOrangeBlue_v0.1_JRS"
+ggsave(stacked.DQfreq.RedOrBlue,
+       filename = paste(filename, ".png", sep = ""),
+       width = 7, height = 5, units = "in")
+ggsave(stacked.DQfreq.RedOrBlue,
+       filename = paste(filename, ".pdf", sep = ""),
+       device = cairo_pdf, width = 7, height = 5, units = "in")
+```
+
+```{r}
+# plotData.HLADQ_freq %>%
+#   select(-Genotype_category) %>%
+#   arrange(Group) %>%
+#   group_by(Group) %>%
+#   summarise(sum(`Frequency (%)`))
+
+DQfreq.T21minusD21.RedBlue <- plotData.HLADQ_freq %>%
+  select(-Genotype_category) %>%
+  select(`HLA-DQ genotype`, Group, `Frequency (%)`) %>%
+  separate(Group, into = c("Karyotype", "Celiac"), sep = "\n", extra = "merge", remove = FALSE) %>%
+  select(`HLA-DQ genotype`, Karyotype, Celiac, `Frequency (%)`) %>%
+  spread(key = Karyotype, value = `Frequency (%)`) %>%
+  mutate(`delta_Frequency (T21 - D21)` = `+DS` - `-DS`) %>%
+  arrange(`delta_Frequency (T21 - D21)`) %>%
+  ggplot(aes(x = Celiac, y = `delta_Frequency (T21 - D21)`, color = `HLA-DQ genotype`, fill = `HLA-DQ genotype`)) +
+  #geom_bar(position = "stack", stat = "identity") +
+  geom_bar(position = "dodge", stat = "identity") +
+  xlab("") +
+  #ylab("delta_Frequency (%)") +
+  #ylab(bquote('%'~Freq[T21]~'')) +  # -%[D21]~'')) +
+  ylab(bquote(''~Freq[T21]-Freq[D21]~'')) +  # -%[D21]~'')) +
+  #ylab( paste("test", bquote(''~Freq[T21]~''), sep = "") ) +  # -%[D21]~'')) +
+  #ylab(bquote(''~-log[10](P)~'')) +
+  theme(legend.title = element_blank(),
+        aspect.ratio = 1) +
+  scale_colour_manual(values = custom.RedBlue3) +
+  scale_fill_manual(values = custom.RedBlue3) +
+  ggtitle("HLA-DQ genotype frequencies by CD\nin T21 compared to D21*") +
+  labs(caption = "*As reported in Sharp et al., 2019.") +
+  geom_hline(yintercept = 0, color = "black")
+
+DQfreq.T21minusD21.RedOrBlue <- plotData.HLADQ_freq %>%
+  select(-Genotype_category) %>%
+  select(`HLA-DQ genotype`, Group, `Frequency (%)`) %>%
+  separate(Group, into = c("Karyotype", "Celiac"), sep = "\n", extra = "merge", remove = FALSE) %>%
+  select(`HLA-DQ genotype`, Karyotype, Celiac, `Frequency (%)`) %>%
+  spread(key = Karyotype, value = `Frequency (%)`) %>%
+  mutate(`delta_Frequency (T21 - D21)` = `+DS` - `-DS`) %>%
+  arrange(`delta_Frequency (T21 - D21)`) %>%
+  ggplot(aes(x = Celiac, y = `delta_Frequency (T21 - D21)`, color = `HLA-DQ genotype`, fill = `HLA-DQ genotype`)) +
+  #geom_bar(position = "stack", stat = "identity") +
+  geom_bar(position = "dodge", stat = "identity") +
+  xlab("") +
+  #ylab("delta_Frequency (%)") +
+  #ylab(bquote('%'~Freq[T21]~'')) +  # -%[D21]~'')) +
+  ylab(bquote(''~Freq[T21]-Freq[D21]~'')) +  # -%[D21]~'')) +
+  #ylab( paste("test", bquote(''~Freq[T21]~''), sep = "") ) +  # -%[D21]~'')) +
+  #ylab(bquote(''~-log[10](P)~'')) +
+  theme(legend.title = element_blank(),
+        aspect.ratio = 1) +
+  scale_colour_manual(values = custom.RdOrBlue) +
+  scale_fill_manual(values = custom.RdOrBlue) +
+  ggtitle("HLA-DQ genotype frequencies by CD\nin T21 compared to D21*") +
+  labs(caption = "*As reported in Sharp et al., 2019.") +
+  geom_hline(yintercept = 0, color = "black")
+
+DQfreq.T21minusD21.RedBlue
+DQfreq.T21minusD21.RedOrBlue
+
+setwd(dir.Figures)
+filename <- "MEGA_022322_Barplot_HLADQfreq_T21vsD21_RedBlue_v0.1_JRS"
+ggsave(DQfreq.T21minusD21.RedBlue,
+       filename = paste(filename, ".png", sep = ""),
+       width = 7, height = 5, units = "in")
+ggsave(DQfreq.T21minusD21.RedBlue,
+       filename = paste(filename, ".pdf", sep = ""),
+       device = cairo_pdf, width = 7, height = 5, units = "in")
+
+setwd(dir.Figures)
+filename <- "MEGA_022322_Barplot_HLADQfreq_T21vsD21_RedOrangeBlue_v0.1_JRS"
+ggsave(DQfreq.T21minusD21.RedOrBlue,
+       filename = paste(filename, ".png", sep = ""),
+       width = 7, height = 5, units = "in")
+ggsave(DQfreq.T21minusD21.RedOrBlue,
+       filename = paste(filename, ".pdf", sep = ""),
+       device = cairo_pdf, width = 7, height = 5, units = "in")
+```
+
+
+#### Make another set of tables to summarize frequencies of HLA-DQ genotypes grouped by Celiac-permissive vs. non-permissive
+```{r}
+HLADQ_freq.PermissiveVsNonPermissive.long <- plotData.HLADQ_freq %>%
+  mutate(Category = ifelse(Genotype_category=="Non-permissive", "Non-permissive", "Permissive")) %>%
+  group_by(Category, Group) %>%
+  summarise(`Frequency (%)` = round(sum(`Frequency (%)`), digits = 1)) %>%
+  ungroup() %>%
+  select(Group, Category, `Frequency (%)`) %>%
+  rename(`HLA-DQ genotype category` = Category) %>%
+  mutate(Group = gsub("\n", " ", Group))
+
+HLADQ_freq.PermissiveVsNonPermissive.wide <- HLADQ_freq.PermissiveVsNonPermissive.long %>%
+  spread(key = `HLA-DQ genotype category`, value = `Frequency (%)`) %>%
+  mutate(Total = round(`Non-permissive` + Permissive, digits = 0)) %>%
+  rename(`Non-permissive HLA-DQ genotype (%)` = `Non-permissive`,
+         `Permissive HLA-DQ genotype (%)` = Permissive,
+         `Total (%)` = Total)
+
+HLADQ_freq.PermissiveVsNonPermissive.long
+HLADQ_freq.PermissiveVsNonPermissive.wide
+
+setwd(dir.Tables)
+fwrite(HLADQ_freq.PermissiveVsNonPermissive.long %>%
+         # Add a space before the group abbreviations to prevent errors when opening in Excel:
+         mutate(Group = paste(" ", Group, " ", sep = "")),
+       "MEGA_022322_HLADQgenotype_PermissiveVsNon_FreqByCDandDS_LONG_v0.1_JRS.csv")
+fwrite(HLADQ_freq.PermissiveVsNonPermissive.wide %>%
+         # Add a space before the group abbreviations to prevent errors when opening in Excel:
+         mutate(Group = paste(" ", Group, " ", sep = "")),
+       "MEGA_022322_HLADQgenotype_PermissiveVsNon_FreqByCDandDS_WIDE_v0.1_JRS.csv")
+
+setwd(dir.Tables)
+fwrite(HLADQ_freq.PermissiveVsNonPermissive.long, "MEGA_022322_HLADQgenotype_PermissiveVsNon_FreqByCDandDS_LONG_v0.1_JRS.tsv", sep = "\t")
+fwrite(HLADQ_freq.PermissiveVsNonPermissive.wide, "MEGA_022322_HLADQgenotype_PermissiveVsNon_FreqByCDandDS_WIDE_v0.1_JRS.tsv", sep = "\t")
+```
+
+
+```{r}
+stacked.DQfreq.RedBlue.facetByDS <- plotData.HLADQ_freq %>%
+  separate(Group, into = c("DS", "CD"), sep = "\n", extra = "merge", remove = FALSE) %>%
+  # mutate(Permissive = ifelse(grepl("Non-permissive", Genotype_category)==TRUE, 0, 1),
+  #        Permissive = factor(Permissive, levels = c(0,1)),
+  #        Genotype_category = factor(Genotype_category,
+  #                                   levels = c("Non-permissive", "Permissive, low risk", "Permissive, intermediate risk", "Permissive, high risk")),
+  #        Genotype_category.num = as.numeric(Genotype_category)) %>%
+  # mutate(Group = gsub(" ", "\n", Group),
+  #        Group = factor(Group, levels = c("-DS\n+CD", "+DS\n+CD", "-DS\n-CD", "+DS\n-CD"))) %>%
+  ggplot(aes(x = CD, y = `Frequency (%)`, color = `HLA-DQ genotype`, fill = `HLA-DQ genotype`)) +
+  geom_bar(position = "stack", stat = "identity") +
+  xlab("") +
+  ylab("Frequency (%)") +
+  theme(legend.title = element_blank(),
+        aspect.ratio = 1) +
+  scale_colour_manual(values = custom.RedBlue3) +
+  scale_fill_manual(values = custom.RedBlue3) +
+  facet_wrap(~DS)
+  ggtitle("HLA-DQ genotype frequency by karyotype and Celiac status") # +
+
+stacked.DQfreq.RedBlue.facetByDS
+
+setwd(dir.Figures)
+filename <- "MEGA_022322_StackedBarplot_HLADQ_Genotype_Frequencies_RedBlue_FacetByDS_v0.1_JRS"
+ggsave(stacked.DQfreq.RedBlue.facetByDS,
+       filename = paste(filename, ".png", sep = ""),
+       width = 7, height = 5, units = "in")
+ggsave(stacked.DQfreq.RedBlue.facetByDS,
+       filename = paste(filename, ".pdf", sep = ""),
+       device = cairo_pdf, width = 7, height = 5, units = "in")
+
+stacked.DQfreq.RedBlue.facetByCD <- plotData.HLADQ_freq %>%
+  separate(Group, into = c("DS", "CD"), sep = "\n", extra = "merge", remove = FALSE) %>%
+  # mutate(Permissive = ifelse(grepl("Non-permissive", Genotype_category)==TRUE, 0, 1),
+  #        Permissive = factor(Permissive, levels = c(0,1)),
+  #        Genotype_category = factor(Genotype_category,
+  #                                   levels = c("Non-permissive", "Permissive, low risk", "Permissive, intermediate risk", "Permissive, high risk")),
+  #        Genotype_category.num = as.numeric(Genotype_category)) %>%
+  # mutate(Group = gsub(" ", "\n", Group),
+  #        Group = factor(Group, levels = c("-DS\n+CD", "+DS\n+CD", "-DS\n-CD", "+DS\n-CD"))) %>%
+  ggplot(aes(x = DS, y = `Frequency (%)`, color = `HLA-DQ genotype`, fill = `HLA-DQ genotype`)) +
+  geom_bar(position = "stack", stat = "identity") +
+  xlab("") +
+  ylab("Frequency (%)") +
+  theme(legend.title = element_blank(),
+        aspect.ratio = 1) +
+  scale_colour_manual(values = custom.RedBlue3) +
+  scale_fill_manual(values = custom.RedBlue3) +
+  facet_wrap(~CD)
+  ggtitle("HLA-DQ genotype frequency by karyotype and Celiac status") # +
+
+stacked.DQfreq.RedBlue.facetByCD
+
+setwd(dir.Figures)
+filename <- "MEGA_022322_StackedBarplot_HLADQ_Genotype_Frequencies_RedBlue_FacetByCD_v0.1_JRS"
+ggsave(stacked.DQfreq.RedBlue.facetByCD,
+       filename = paste(filename, ".png", sep = ""),
+       width = 7, height = 5, units = "in")
+ggsave(stacked.DQfreq.RedBlue.facetByCD,
+       filename = paste(filename, ".pdf", sep = ""),
+       device = cairo_pdf, width = 7, height = 5, units = "in")
+```
+
+
+```{r}
+# High = red
+# Orange? Yellow?
+# Green
+# Non-permissive = blue
+# OR
+# High = red
+# Orange? Yellow?/Green = combined low/intermediate risk
+# Non-permissive = blue
+
+# ColorCat3.option1 = red/orange/blue
+# ColorCat3.option2 = red/green/blue
+# ColorCat4.option1 = red/orange/green/blue
+# ColorCat4.option2 = red/gold/green/blue
+
+plotData.HLADQ_freq.colorCat <- plotData.HLADQ_freq %>%
+  mutate(
+    # ColorCat4.option1 = red/orange/green/blue
+    ColorCat4.option1 = ifelse(grepl("high", Genotype_category)==TRUE, "red",
+                               ifelse(grepl("intermediate", Genotype_category)==TRUE, "orange",
+                                      ifelse(grepl("low", Genotype_category)==TRUE, "green",
+                                             ifelse(grepl("Non-permissive", Genotype_category)==TRUE, "blue", NA)))),
+    # ColorCat4.option2 = red/gold/green/blue
+    ColorCat4.option2 = ifelse(grepl("high", Genotype_category)==TRUE, "red",
+                               ifelse(grepl("intermediate", Genotype_category)==TRUE, "gold",
+                                      ifelse(grepl("low", Genotype_category)==TRUE, "green",
+                                             ifelse(grepl("Non-permissive", Genotype_category)==TRUE, "blue", NA)))),
+    # ColorCat3.option1 = red/orange/blue
+    ColorCat3.option1 = ifelse(grepl("high", Genotype_category)==TRUE, "red",
+                               ifelse(grepl("intermediate", Genotype_category)==TRUE | grepl("low", Genotype_category)==TRUE, "orange",
+                                      ifelse(grepl("Non-permissive", Genotype_category)==TRUE, "blue", NA))),
+    # ColorCat3.option2 = red/green/blue
+    ColorCat3.option2 = ifelse(grepl("high", Genotype_category)==TRUE, "red",
+                               ifelse(grepl("intermediate", Genotype_category)==TRUE | grepl("low", Genotype_category)==TRUE, "green",
+                                      ifelse(grepl("Non-permissive", Genotype_category)==TRUE, "blue", NA)))
+    )
+
+plotData.HLADQ_freq.colorCat
+
+plotData.HLADQ_freq.colorCat %>%
+  select(`HLA-DQ genotype`, ColorCat4.option1) %>%
+  unique() %>%
+  group_by(ColorCat4.option1) %>%
+  summarise(N = n())
+plotData.HLADQ_freq.colorCat %>%
+  select(`HLA-DQ genotype`, ColorCat4.option2) %>%
+  unique() %>%
+  group_by(ColorCat4.option2) %>%
+  summarise(N = n())
+plotData.HLADQ_freq.colorCat %>%
+  select(`HLA-DQ genotype`, ColorCat3.option1) %>%
+  unique() %>%
+  group_by(ColorCat3.option1) %>%
+  summarise(N = n())
+plotData.HLADQ_freq.colorCat %>%
+  select(`HLA-DQ genotype`, ColorCat3.option2) %>%
+  unique() %>%
+  group_by(ColorCat3.option2) %>%
+  summarise(N = n())
+
+# 2-color green scale
+# 3-color blue scale
+# 3-color red scale
+# 7-color orange scale
+# 7-color gold scale
+# 9-color green scale
+# 9-color orange scale
+# 9-color gold scale
+```
+
+#### 3-color options
+```{r}
+# KEEP
+# ColorCat3.option1 = red3/orange9/blue3
+reds3.a <- brewer.pal(n = 8, name = "Reds")[6:8] %>% rev()
+blues3.b <- brewer.pal(n = 9, name = "Blues")[5:7]
+colfunc.orange9a <- colorRampPalette(c(brewer.pal(n = 9, name = "Oranges")[6],
+                                   brewer.pal(n = 9, name = "Oranges")[2]))
+custom.orange9a <- c( rev(colfunc.orange9a(9)) ) %>% rev()
+pal.ColorCat3.Option1a <- c(reds3.a, custom.orange9a, blues3.b)
+stacked.DQfreq.facetByCD.ColorCat3.Option1a <- plotData.HLADQ_freq %>%
+  separate(Group, into = c("DS", "CD"), sep = "\n", extra = "merge", remove = FALSE) %>%
+  ggplot(aes(x = DS, y = `Frequency (%)`, color = `HLA-DQ genotype`, fill = `HLA-DQ genotype`)) +
+  geom_bar(position = "stack", stat = "identity") +
+  xlab("") +
+  ylab("Frequency (%)") +
+  theme(legend.title = element_blank(),
+        aspect.ratio = 1) +
+  scale_colour_manual(values = pal.ColorCat3.Option1a) +
+  scale_fill_manual(values = pal.ColorCat3.Option1a) +
+  facet_wrap(~CD) +
+  ggtitle("HLA-DQ genotype frequency by karyotype and Celiac status")
+stacked.DQfreq.facetByCD.ColorCat3.Option1a
+
+# KEEP
+# ColorCat3.option1 = red3/orange9/blue3
+reds3.a <- brewer.pal(n = 8, name = "Reds")[6:8] %>% rev()
+blues3.b <- brewer.pal(n = 9, name = "Blues")[5:7]
+colfunc.orange9a <- colorRampPalette(c(brewer.pal(n = 9, name = "Oranges")[5],
+                                   brewer.pal(n = 9, name = "Oranges")[2]))
+custom.orange9a <- c( rev(colfunc.orange9a(9)) ) %>% rev()
+pal.ColorCat3.Option1b <- c(reds3.a, custom.orange9a, blues3.b)
+stacked.DQfreq.facetByCD.ColorCat3.Option1b <- plotData.HLADQ_freq %>%
+  separate(Group, into = c("DS", "CD"), sep = "\n", extra = "merge", remove = FALSE) %>%
+  ggplot(aes(x = DS, y = `Frequency (%)`, color = `HLA-DQ genotype`, fill = `HLA-DQ genotype`)) +
+  geom_bar(position = "stack", stat = "identity") +
+  xlab("") +
+  ylab("Frequency (%)") +
+  theme(legend.title = element_blank(),
+        aspect.ratio = 1) +
+  scale_colour_manual(values = pal.ColorCat3.Option1b) +
+  scale_fill_manual(values = pal.ColorCat3.Option1b) +
+  facet_wrap(~CD) +
+  ggtitle("HLA-DQ genotype frequency by karyotype and Celiac status")
+stacked.DQfreq.facetByCD.ColorCat3.Option1b
+
+# KEEP
+# ColorCat3.option2 = red/gold/blue
+reds3.a <- brewer.pal(n = 8, name = "Reds")[6:8] %>% rev()
+blues3.b <- brewer.pal(n = 9, name = "Blues")[5:7]
+colfunc.gold9 <- colorRampPalette(c(brewer.pal(n = 9, name = "Set3")[6], brewer.pal(n = 9, name = "YlOrRd")[2]))
+custom.gold9 <- c( rev(colfunc.gold9(9)) ) %>% rev()
+pal.ColorCat3.Option2 <- c(reds3.a, custom.gold9, blues3.b)
+stacked.DQfreq.facetByCD.ColorCat3.Option2 <- plotData.HLADQ_freq %>%
+  separate(Group, into = c("DS", "CD"), sep = "\n", extra = "merge", remove = FALSE) %>%
+  ggplot(aes(x = DS, y = `Frequency (%)`, color = `HLA-DQ genotype`, fill = `HLA-DQ genotype`)) +
+  geom_bar(position = "stack", stat = "identity") +
+  xlab("") +
+  ylab("Frequency (%)") +
+  theme(legend.title = element_blank(),
+        aspect.ratio = 1) +
+  scale_colour_manual(values = pal.ColorCat3.Option2) +
+  scale_fill_manual(values = pal.ColorCat3.Option2) +
+  facet_wrap(~CD) +
+  ggtitle("HLA-DQ genotype frequency by karyotype and Celiac status")
+stacked.DQfreq.facetByCD.ColorCat3.Option2
+
+# KEEP
+# ColorCat3.option3 = red/green/blue
+reds3.a <- brewer.pal(n = 8, name = "Reds")[6:8] %>% rev()
+blues3.b <- brewer.pal(n = 9, name = "Blues")[6:8]
+colfunc.green9 <- colorRampPalette(c(brewer.pal(n = 9, name = "Greens")[6],
+                                   brewer.pal(n = 9, name = "Greens")[2]))
+custom.green9 <- c( rev(colfunc.green9(9)) ) %>% rev()
+pal.ColorCat3.Option3 <- c(reds3.a, custom.green9, blues3.b)
+stacked.DQfreq.facetByCD.ColorCat3.Option3 <- plotData.HLADQ_freq %>%
+  separate(Group, into = c("DS", "CD"), sep = "\n", extra = "merge", remove = FALSE) %>%
+  ggplot(aes(x = DS, y = `Frequency (%)`, color = `HLA-DQ genotype`, fill = `HLA-DQ genotype`)) +
+  geom_bar(position = "stack", stat = "identity") +
+  xlab("") +
+  ylab("Frequency (%)") +
+  theme(legend.title = element_blank(),
+        aspect.ratio = 1) +
+  scale_colour_manual(values = pal.ColorCat3.Option3) +
+  scale_fill_manual(values = pal.ColorCat3.Option3) +
+  facet_wrap(~CD) +
+  ggtitle("HLA-DQ genotype frequency by karyotype and Celiac status")
+stacked.DQfreq.facetByCD.ColorCat3.Option3
+
+reds3.a <- brewer.pal(n = 8, name = "Reds")[6:8] %>% rev()
+blues3.b <- brewer.pal(n = 9, name = "Blues")[6:8]
+colfunc.orange9a <- colorRampPalette(c(brewer.pal(n = 9, name = "Oranges")[6],
+                                   brewer.pal(n = 9, name = "Oranges")[2]))
+custom.orange9a <- c( rev(colfunc.orange9a(9)) ) %>% rev()
+pal.ColorCat3.Option1c <- c(reds3.a, custom.orange9a, blues3.b)
+stacked.DQfreq.facetByCD.ColorCat3.Option1c <- plotData.HLADQ_freq %>%
+  separate(Group, into = c("DS", "CD"), sep = "\n", extra = "merge", remove = FALSE) %>%
+  ggplot(aes(x = DS, y = `Frequency (%)`, color = `HLA-DQ genotype`, fill = `HLA-DQ genotype`)) +
+  geom_bar(position = "stack", stat = "identity") +
+  xlab("") +
+  ylab("Frequency (%)") +
+  theme(legend.title = element_blank(),
+        aspect.ratio = 1) +
+  scale_colour_manual(values = pal.ColorCat3.Option1c) +
+  scale_fill_manual(values = pal.ColorCat3.Option1c) +
+  facet_wrap(~CD) +
+  ggtitle("HLA-DQ genotype frequency by karyotype and Celiac status")
+stacked.DQfreq.facetByCD.ColorCat3.Option1c
+
+reds3.a <- brewer.pal(n = 8, name = "Reds")[6:8] %>% rev()
+blues3.b <- brewer.pal(n = 9, name = "Blues")[6:8]
+colfunc.orange9a <- colorRampPalette(c(brewer.pal(n = 9, name = "Oranges")[5],
+                                   brewer.pal(n = 9, name = "Oranges")[2]))
+custom.orange9a <- c( rev(colfunc.orange9a(9)) ) %>% rev()
+pal.ColorCat3.Option1d <- c(reds3.a, custom.orange9a, blues3.b)
+stacked.DQfreq.facetByCD.ColorCat3.Option1d <- plotData.HLADQ_freq %>%
+  separate(Group, into = c("DS", "CD"), sep = "\n", extra = "merge", remove = FALSE) %>%
+  ggplot(aes(x = DS, y = `Frequency (%)`, color = `HLA-DQ genotype`, fill = `HLA-DQ genotype`)) +
+  geom_bar(position = "stack", stat = "identity") +
+  xlab("") +
+  ylab("Frequency (%)") +
+  theme(legend.title = element_blank(),
+        aspect.ratio = 1) +
+  scale_colour_manual(values = pal.ColorCat3.Option1d) +
+  scale_fill_manual(values = pal.ColorCat3.Option1d) +
+  facet_wrap(~CD) +
+  ggtitle("HLA-DQ genotype frequency by karyotype and Celiac status")
+stacked.DQfreq.facetByCD.ColorCat3.Option1d
+```
+
+
+#### 4-color options
+```{r}
+# ColorCat4.option1 = red/orange/green/blue
+# ColorCat4.option2 = red/gold/green/blue
+
+# KEEP
+# ColorCat4.option1 = red3/orange7green2/blue3
+reds3.a <- brewer.pal(n = 8, name = "Reds")[6:8] %>% rev()
+blues3.b <- brewer.pal(n = 9, name = "Blues")[6:8]
+greens2 <- brewer.pal(n = 9, name = "Greens")[6:7]
+colfunc.orange7 <- colorRampPalette(c(brewer.pal(n = 9, name = "Oranges")[6],
+                                   brewer.pal(n = 9, name = "Oranges")[3]))
+custom.orange7 <- c( rev(colfunc.orange7(7)) ) %>% rev()
+pal.ColorCat4.Option1a <- c(reds3.a, custom.orange7, greens2, blues3.b)
+stacked.DQfreq.facetByCD.ColorCat4.Option1a <- plotData.HLADQ_freq %>%
+  separate(Group, into = c("DS", "CD"), sep = "\n", extra = "merge", remove = FALSE) %>%
+  ggplot(aes(x = DS, y = `Frequency (%)`, color = `HLA-DQ genotype`, fill = `HLA-DQ genotype`)) +
+  geom_bar(position = "stack", stat = "identity") +
+  xlab("") +
+  ylab("Frequency (%)") +
+  theme(legend.title = element_blank(),
+        aspect.ratio = 1) +
+  scale_colour_manual(values = pal.ColorCat4.Option1a) +
+  scale_fill_manual(values = pal.ColorCat4.Option1a) +
+  facet_wrap(~CD) +
+  ggtitle("HLA-DQ genotype frequency by karyotype and Celiac status")
+stacked.DQfreq.facetByCD.ColorCat4.Option1a
+
+# KEEP
+# ColorCat4.option1 = red3/orange7green2/blue3
+reds3.a <- brewer.pal(n = 8, name = "Reds")[6:8] %>% rev()
+blues3.b <- brewer.pal(n = 9, name = "Blues")[5:7]
+greens2 <- brewer.pal(n = 9, name = "Greens")[6:7]
+colfunc.orange7 <- colorRampPalette(c(brewer.pal(n = 9, name = "Oranges")[6],
+                                   brewer.pal(n = 9, name = "Oranges")[3]))
+custom.orange7 <- c( rev(colfunc.orange7(7)) ) %>% rev()
+pal.ColorCat4.Option1b <- c(reds3.a, custom.orange7, greens2, blues3.b)
+stacked.DQfreq.facetByCD.ColorCat4.Option1b <- plotData.HLADQ_freq %>%
+  separate(Group, into = c("DS", "CD"), sep = "\n", extra = "merge", remove = FALSE) %>%
+  ggplot(aes(x = DS, y = `Frequency (%)`, color = `HLA-DQ genotype`, fill = `HLA-DQ genotype`)) +
+  geom_bar(position = "stack", stat = "identity") +
+  xlab("") +
+  ylab("Frequency (%)") +
+  theme(legend.title = element_blank(),
+        aspect.ratio = 1) +
+  scale_colour_manual(values = pal.ColorCat4.Option1b) +
+  scale_fill_manual(values = pal.ColorCat4.Option1b) +
+  facet_wrap(~CD) +
+  ggtitle("HLA-DQ genotype frequency by karyotype and Celiac status")
+stacked.DQfreq.facetByCD.ColorCat4.Option1b
+
+# ColorCat4.option2 = red/gold/green/blue
+reds3.a <- brewer.pal(n = 8, name = "Reds")[6:8] %>% rev()
+colfunc.gold7 <- colorRampPalette(c(brewer.pal(n = 9, name = "Set3")[6], brewer.pal(n = 9, name = "YlOrRd")[2]))
+custom.gold7 <- c( rev(colfunc.gold9(7)) ) %>% rev()
+blues3.b <- brewer.pal(n = 9, name = "Blues")[5:7]
+greens2 <- brewer.pal(n = 9, name = "Greens")[6:7]
+colfunc.orange7 <- colorRampPalette(c(brewer.pal(n = 9, name = "Oranges")[6],
+                                   brewer.pal(n = 9, name = "Oranges")[3]))
+custom.orange7 <- c( rev(colfunc.orange7(7)) ) %>% rev()
+pal.ColorCat4.Option2a <- c(reds3.a, custom.gold7, greens2, blues3.b)
+stacked.DQfreq.facetByCD.ColorCat4.Option2a <- plotData.HLADQ_freq %>%
+  separate(Group, into = c("DS", "CD"), sep = "\n", extra = "merge", remove = FALSE) %>%
+  ggplot(aes(x = DS, y = `Frequency (%)`, color = `HLA-DQ genotype`, fill = `HLA-DQ genotype`)) +
+  geom_bar(position = "stack", stat = "identity") +
+  xlab("") +
+  ylab("Frequency (%)") +
+  theme(legend.title = element_blank(),
+        aspect.ratio = 1) +
+  scale_colour_manual(values = pal.ColorCat4.Option2a) +
+  scale_fill_manual(values = pal.ColorCat4.Option2a) +
+  facet_wrap(~CD) +
+  ggtitle("HLA-DQ genotype frequency by karyotype and Celiac status")
+stacked.DQfreq.facetByCD.ColorCat4.Option2a
+
+# ColorCat4.option2 = red/gold/green/blue
+reds3.a <- brewer.pal(n = 8, name = "Reds")[6:8] %>% rev()
+colfunc.gold7 <- colorRampPalette(c("goldenrod3", brewer.pal(n = 9, name = "YlOrRd")[2]))
+custom.gold7 <- c( rev(colfunc.gold9(7)) ) %>% rev()
+blues3.b <- brewer.pal(n = 9, name = "Blues")[5:7]
+greens2 <- brewer.pal(n = 9, name = "Greens")[6:7]
+colfunc.orange7 <- colorRampPalette(c(brewer.pal(n = 9, name = "Oranges")[6],
+                                   brewer.pal(n = 9, name = "Oranges")[3]))
+custom.orange7 <- c( rev(colfunc.orange7(7)) ) %>% rev()
+pal.ColorCat4.Option2b <- c(reds3.a, custom.gold7, greens2, blues3.b)
+stacked.DQfreq.facetByCD.ColorCat4.Option2b <- plotData.HLADQ_freq %>%
+  separate(Group, into = c("DS", "CD"), sep = "\n", extra = "merge", remove = FALSE) %>%
+  ggplot(aes(x = DS, y = `Frequency (%)`, color = `HLA-DQ genotype`, fill = `HLA-DQ genotype`)) +
+  geom_bar(position = "stack", stat = "identity") +
+  xlab("") +
+  ylab("Frequency (%)") +
+  theme(legend.title = element_blank(),
+        aspect.ratio = 1) +
+  scale_colour_manual(values = pal.ColorCat4.Option2b) +
+  scale_fill_manual(values = pal.ColorCat4.Option2b) +
+  facet_wrap(~CD) +
+  ggtitle("HLA-DQ genotype frequency by karyotype and Celiac status")
+stacked.DQfreq.facetByCD.ColorCat4.Option2b
+
+reds3.a <- brewer.pal(n = 8, name = "Reds")[6:8] %>% rev()
+colfunc.gold7 <- colorRampPalette(c("goldenrod2", brewer.pal(n = 9, name = "YlOrRd")[2]))
+custom.gold7 <- c( rev(colfunc.gold9(7)) ) %>% rev()
+blues3.b <- brewer.pal(n = 9, name = "Blues")[6:8]
+greens2 <- brewer.pal(n = 9, name = "Greens")[6:7]
+colfunc.orange7 <- colorRampPalette(c(brewer.pal(n = 9, name = "Oranges")[6],
+                                   brewer.pal(n = 9, name = "Oranges")[3]))
+custom.orange7 <- c( rev(colfunc.orange7(7)) ) %>% rev()
+pal.ColorCat4.Option2c <- c(reds3.a, custom.gold7, greens2, blues3.b)
+stacked.DQfreq.facetByCD.ColorCat4.Option2c <- plotData.HLADQ_freq %>%
+  separate(Group, into = c("DS", "CD"), sep = "\n", extra = "merge", remove = FALSE) %>%
+  ggplot(aes(x = DS, y = `Frequency (%)`, color = `HLA-DQ genotype`, fill = `HLA-DQ genotype`)) +
+  geom_bar(position = "stack", stat = "identity") +
+  xlab("") +
+  ylab("Frequency (%)") +
+  theme(legend.title = element_blank(),
+        aspect.ratio = 1) +
+  scale_colour_manual(values = pal.ColorCat4.Option2c) +
+  scale_fill_manual(values = pal.ColorCat4.Option2c) +
+  facet_wrap(~CD) +
+  ggtitle("HLA-DQ genotype frequency by karyotype and Celiac status")
+stacked.DQfreq.facetByCD.ColorCat4.Option2c
+
+
+reds3.a <- brewer.pal(n = 8, name = "Reds")[6:8] %>% rev()
+colfunc.gold7 <- colorRampPalette(c("goldenrod2", brewer.pal(n = 9, name = "YlOrRd")[2]))
+custom.gold7 <- c( rev(colfunc.gold9(7)) ) %>% rev()
+blues3.b <- brewer.pal(n = 9, name = "Blues")[6:8]
+greens2 <- brewer.pal(n = 9, name = "Greens")[6:7]
+colfunc.orange7 <- colorRampPalette(c(brewer.pal(n = 9, name = "Oranges")[6],
+                                   brewer.pal(n = 9, name = "Oranges")[3]))
+custom.orange7 <- c( rev(colfunc.orange7(7)) ) %>% rev()
+colfunc.blue3 <- colorRampPalette(c(brewer.pal(n = 9, name = "Blues")[5],
+                                   brewer.pal(n = 9, name = "Blues")[8]))
+custom.blue3 <- c( rev(colfunc.blue3(3)) ) %>% rev()
+pal.ColorCat4.Option2d <- c(reds3.a, custom.gold7, greens2, custom.blue3)
+stacked.DQfreq.facetByCD.ColorCat4.Option2d <- plotData.HLADQ_freq %>%
+  separate(Group, into = c("DS", "CD"), sep = "\n", extra = "merge", remove = FALSE) %>%
+  ggplot(aes(x = DS, y = `Frequency (%)`, color = `HLA-DQ genotype`, fill = `HLA-DQ genotype`)) +
+  geom_bar(position = "stack", stat = "identity") +
+  xlab("") +
+  ylab("Frequency (%)") +
+  theme(legend.title = element_blank(),
+        aspect.ratio = 1) +
+  scale_colour_manual(values = pal.ColorCat4.Option2d) +
+  scale_fill_manual(values = pal.ColorCat4.Option2d) +
+  facet_wrap(~CD) +
+  ggtitle("HLA-DQ genotype frequency by karyotype and Celiac status")
+stacked.DQfreq.facetByCD.ColorCat4.Option2d
+```
+
+```{r}
+stackedDQfreq.facetByCD.RdOrBu1 <- stacked.DQfreq.facetByCD.ColorCat3.Option1a
+stackedDQfreq.facetByCD.RdOrBu2 <- stacked.DQfreq.facetByCD.ColorCat3.Option1b
+stackedDQfreq.facetByCD.RdOrBu3 <- stacked.DQfreq.facetByCD.ColorCat3.Option1c
+stackedDQfreq.facetByCD.RdOrBu4 <- stacked.DQfreq.facetByCD.ColorCat3.Option1d
+
+stackedDQfreq.facetByCD.RdYlGnBu1 <- stacked.DQfreq.facetByCD.ColorCat4.Option2a
+stackedDQfreq.facetByCD.RdYlGnBu2 <- stacked.DQfreq.facetByCD.ColorCat4.Option2b
+stackedDQfreq.facetByCD.RdYlGnBu3 <- stacked.DQfreq.facetByCD.ColorCat4.Option2c
+stackedDQfreq.facetByCD.RdYlGnBu4 <- stacked.DQfreq.facetByCD.ColorCat4.Option2d
+
+stackedDQfreq.facetByCD.RdGnBu1 <- stacked.DQfreq.facetByCD.ColorCat3.Option3
+
+setwd(dir.Figures)
+filename <- "MEGA_022322_StackedBar_HLADQfreq_FacetByCD_RdOrBu1_v0.1_JRS"
+ggsave(stackedDQfreq.facetByCD.RdOrBu1,
+       filename = paste(filename, ".png", sep = ""),
+       width = 7, height = 5, units = "in")
+ggsave(stackedDQfreq.facetByCD.RdOrBu1,
+       filename = paste(filename, ".pdf", sep = ""),
+       device = cairo_pdf, width = 7, height = 5, units = "in")
+setwd(dir.Figures)
+filename <- "MEGA_022322_StackedBar_HLADQfreq_FacetByCD_RdOrBu2_v0.1_JRS"
+ggsave(stackedDQfreq.facetByCD.RdOrBu2,
+       filename = paste(filename, ".png", sep = ""),
+       width = 7, height = 5, units = "in")
+ggsave(stackedDQfreq.facetByCD.RdOrBu2,
+       filename = paste(filename, ".pdf", sep = ""),
+       device = cairo_pdf, width = 7, height = 5, units = "in")
+setwd(dir.Figures)
+filename <- "MEGA_022322_StackedBar_HLADQfreq_FacetByCD_RdOrBu3_v0.1_JRS"
+ggsave(stackedDQfreq.facetByCD.RdOrBu3,
+       filename = paste(filename, ".png", sep = ""),
+       width = 7, height = 5, units = "in")
+ggsave(stackedDQfreq.facetByCD.RdOrBu3,
+       filename = paste(filename, ".pdf", sep = ""),
+       device = cairo_pdf, width = 7, height = 5, units = "in")
+setwd(dir.Figures)
+filename <- "MEGA_022322_StackedBar_HLADQfreq_FacetByCD_RdOrBu4_v0.1_JRS"
+ggsave(stackedDQfreq.facetByCD.RdOrBu4,
+       filename = paste(filename, ".png", sep = ""),
+       width = 7, height = 5, units = "in")
+ggsave(stackedDQfreq.facetByCD.RdOrBu4,
+       filename = paste(filename, ".pdf", sep = ""),
+       device = cairo_pdf, width = 7, height = 5, units = "in")
+
+setwd(dir.Figures)
+filename <- "MEGA_022322_StackedBar_HLADQfreq_FacetByCD_RdYlGnBu1_v0.1_JRS"
+ggsave(stackedDQfreq.facetByCD.RdYlGnBu1,
+       filename = paste(filename, ".png", sep = ""),
+       width = 7, height = 5, units = "in")
+ggsave(stackedDQfreq.facetByCD.RdYlGnBu1,
+       filename = paste(filename, ".pdf", sep = ""),
+       device = cairo_pdf, width = 7, height = 5, units = "in")
+setwd(dir.Figures)
+filename <- "MEGA_022322_StackedBar_HLADQfreq_FacetByCD_RdYlGnBu2_v0.1_JRS"
+ggsave(stackedDQfreq.facetByCD.RdYlGnBu2,
+       filename = paste(filename, ".png", sep = ""),
+       width = 7, height = 5, units = "in")
+ggsave(stackedDQfreq.facetByCD.RdYlGnBu2,
+       filename = paste(filename, ".pdf", sep = ""),
+       device = cairo_pdf, width = 7, height = 5, units = "in")
+setwd(dir.Figures)
+filename <- "MEGA_022322_StackedBar_HLADQfreq_FacetByCD_RdYlGnBu3_v0.1_JRS"
+ggsave(stackedDQfreq.facetByCD.RdYlGnBu3,
+       filename = paste(filename, ".png", sep = ""),
+       width = 7, height = 5, units = "in")
+ggsave(stackedDQfreq.facetByCD.RdYlGnBu3,
+       filename = paste(filename, ".pdf", sep = ""),
+       device = cairo_pdf, width = 7, height = 5, units = "in")
+setwd(dir.Figures)
+filename <- "MEGA_022322_StackedBar_HLADQfreq_FacetByCD_RdYlGnBu4_v0.1_JRS"
+ggsave(stackedDQfreq.facetByCD.RdYlGnBu4,
+       filename = paste(filename, ".png", sep = ""),
+       width = 7, height = 5, units = "in")
+ggsave(stackedDQfreq.facetByCD.RdYlGnBu4,
+       filename = paste(filename, ".pdf", sep = ""),
+       device = cairo_pdf, width = 7, height = 5, units = "in")
+
+setwd(dir.Figures)
+filename <- "MEGA_022322_StackedBar_HLADQfreq_FacetByCD_RdGnBu1_v0.1_JRS"
+ggsave(stackedDQfreq.facetByCD.RdGnBu1,
+       filename = paste(filename, ".png", sep = ""),
+       width = 7, height = 5, units = "in")
+ggsave(stackedDQfreq.facetByCD.RdGnBu1,
+       filename = paste(filename, ".pdf", sep = ""),
+       device = cairo_pdf, width = 7, height = 5, units = "in")
+```
+
+
+```{r}
+# -DS vs. +DS -> Sharp (D21) vs. HTP (T21)
+
+reds3.a <- brewer.pal(n = 8, name = "Reds")[6:8] %>% rev()
+colfunc.gold7 <- colorRampPalette(c("goldenrod3", brewer.pal(n = 9, name = "YlOrRd")[2]))
+custom.gold7 <- c( rev(colfunc.gold9(7)) ) %>% rev()
+blues3.b <- brewer.pal(n = 9, name = "Blues")[5:7]
+greens2 <- brewer.pal(n = 9, name = "Greens")[6:7]
+colfunc.orange7 <- colorRampPalette(c(brewer.pal(n = 9, name = "Oranges")[6],
+                                   brewer.pal(n = 9, name = "Oranges")[3]))
+custom.orange7 <- c( rev(colfunc.orange7(7)) ) %>% rev()
+pal.ColorCat4.selected <- c(reds3.a, custom.gold7, greens2, blues3.b)
+
+stacked.DQfreq.facetByCD.ColorCat4.selected.v1 <- plotData.HLADQ_freq %>%
+  separate(Group, into = c("DS", "CD"), sep = "\n", extra = "merge", remove = FALSE) %>%
+  mutate(DS = ifelse(DS == "-DS", "Sharp\n(D21)",
+                     ifelse(DS == "+DS", "HTP\n(T21)", DS))) %>%
+  ggplot(aes(x = DS, y = `Frequency (%)`, color = `HLA-DQ genotype`, fill = `HLA-DQ genotype`)) +
+  geom_bar(position = "stack", stat = "identity") +
+  xlab("") +
+  ylab("Frequency (%)") +
+  theme(legend.title = element_blank(),
+        aspect.ratio = 1) +
+  scale_colour_manual(values = pal.ColorCat4.selected) +
+  scale_fill_manual(values = pal.ColorCat4.selected) +
+  facet_wrap(~CD) +
+  ggtitle("HLA-DQ genotype frequency by karyotype and Celiac status")
+
+stacked.DQfreq.facetByCD.ColorCat4.selected.v2 <- plotData.HLADQ_freq %>%
+  separate(Group, into = c("DS", "CD"), sep = "\n", extra = "merge", remove = FALSE) %>%
+  mutate(DS = ifelse(DS == "-DS", "D21\n(Sharp)",
+                     ifelse(DS == "+DS", "T21\n(HTP)", DS))) %>%
+  ggplot(aes(x = DS, y = `Frequency (%)`, color = `HLA-DQ genotype`, fill = `HLA-DQ genotype`)) +
+  geom_bar(position = "stack", stat = "identity") +
+  xlab("") +
+  ylab("Frequency (%)") +
+  theme(legend.title = element_blank(),
+        aspect.ratio = 1) +
+  scale_colour_manual(values = pal.ColorCat4.selected) +
+  scale_fill_manual(values = pal.ColorCat4.selected) +
+  facet_wrap(~CD) +
+  ggtitle("HLA-DQ genotype frequency by karyotype and Celiac status")
+
+stacked.DQfreq.facetByCD.ColorCat4.selected.v1
+stacked.DQfreq.facetByCD.ColorCat4.selected.v2
+
+setwd(dir.Figures)
+filename <- "MEGA_022322_StackedBar_HLADQfreq_FacetByCD_RdGnBu_option1_v0.1_JRS"
+ggsave(stacked.DQfreq.facetByCD.ColorCat4.selected.v1,
+       filename = paste(filename, ".png", sep = ""),
+       width = 7, height = 5, units = "in")
+ggsave(stacked.DQfreq.facetByCD.ColorCat4.selected.v1,
+       filename = paste(filename, ".pdf", sep = ""),
+       device = cairo_pdf, width = 7, height = 5, units = "in")
+
+setwd(dir.Figures)
+filename <- "MEGA_022322_StackedBar_HLADQfreq_FacetByCD_RdGnBu_option2_v0.1_JRS"
+ggsave(stacked.DQfreq.facetByCD.ColorCat4.selected.v2,
+       filename = paste(filename, ".png", sep = ""),
+       width = 7, height = 5, units = "in")
+ggsave(stacked.DQfreq.facetByCD.ColorCat4.selected.v2,
+       filename = paste(filename, ".pdf", sep = ""),
+       device = cairo_pdf, width = 7, height = 5, units = "in")
+```
+
+
+#### Creating draft color schemes
+```{r}
+# custom.RedBlue3 <- c( rev(colfunc.Reds(15)[15]),
+#                      rev(colfunc.Reds(15)[2:12]),
+#                      colfunc.Blues(6) %>% tail(n=3) )
+# colfunc.RdOr <- colorRampPalette(c(brewer.pal(n = 9, name = "OrRd")[3],
+#                                    brewer.pal(n=9, name = "Reds")[7]))
+# colfunc.Blues <- colorRampPalette(c("white", "#08519C"))
+# colfunc.Reds <- colorRampPalette(c(brewer.pal(n = 9, name = "Reds")[1],
+#                                    brewer.pal(n=9, name = "Reds")[8]))
+# custom.RdOrBlue <- c( rev(colfunc.Reds(15)[15]),
+#                       rev(colfunc.RdOr(12)) %>% tail(n=11),
+#                      colfunc.Blues(6) %>% tail(n=3) )
+# custom.RedBlue <- c( rev(colfunc.Reds(15)[15]),
+#                      rev(colfunc.Reds(15)[2:12]),
+#                      colfunc.Blues(6) %>% tail(n=3) )
+```
+
+#### Drafts of Red/Blue color scheme, faceted by CD and faceted by DS
+```{r}
+# stacked.DQfreq.4colors.facetByCD <- plotData.HLADQ_freq %>%
+#   separate(Group, into = c("DS", "CD"), sep = "\n", extra = "merge", remove = FALSE) %>%
+#   ggplot(aes(x = DS, y = `Frequency (%)`, color = `HLA-DQ genotype`, fill = `HLA-DQ genotype`)) +
+#   geom_bar(position = "stack", stat = "identity") +
+#   xlab("") +
+#   ylab("Frequency (%)") +
+#   theme(legend.title = element_blank(),
+#         aspect.ratio = 1) +
+#   scale_colour_manual(values = custom.RedBlue3) +
+#   scale_fill_manual(values = custom.RedBlue3) +
+#   facet_wrap(~CD)
+#   ggtitle("HLA-DQ genotype frequency by karyotype and Celiac status") # +
+# 
+# stacked.DQfreq.4colors.facetByCD
+# 
+# setwd(dir.Figures)
+# filename <- "MEGA_022322_StackedBarplot_HLADQ_Genotype_Frequencies_RedBlue_FacetByCD_v0.1_JRS"
+# ggsave(stacked.DQfreq.RedBlue.facetByCD,
+#        filename = paste(filename, ".png", sep = ""),
+#        width = 7, height = 5, units = "in")
+# ggsave(stacked.DQfreq.RedBlue.facetByCD,
+#        filename = paste(filename, ".pdf", sep = ""),
+#        device = cairo_pdf, width = 7, height = 5, units = "in")
+```
+
+#### Drafts of Red/Orange/Blue color scheme, faceted by CD and faceted by DS
+```{r}
+# stacked.DQfreq.RedOrBlue.facetByDS <- plotData.HLADQ_freq %>%
+#   separate(Group, into = c("DS", "CD"), sep = "\n", extra = "merge", remove = FALSE) %>%
+#   ggplot(aes(x = CD, y = `Frequency (%)`, color = `HLA-DQ genotype`, fill = `HLA-DQ genotype`)) +
+#   geom_bar(position = "stack", stat = "identity") +
+#   xlab("") +
+#   ylab("Frequency (%)") +
+#   theme(legend.title = element_blank(),
+#         aspect.ratio = 1) +
+#   scale_colour_manual(values = custom.RdOrBlue) +
+#   scale_fill_manual(values = custom.RdOrBlue) +
+#   facet_wrap(~DS)
+#   ggtitle("HLA-DQ genotype frequency by karyotype and Celiac status") # +
+# 
+# stacked.DQfreq.RedOrBlue.facetByDS
+# 
+# setwd(dir.Figures)
+# filename <- "MEGA_022322_StackedBarplot_HLADQ_Genotype_Frequencies_RdOrBu_FacetByDS_v0.1_JRS"
+# ggsave(stacked.DQfreq.RedOrBlue.facetByDS,
+#        filename = paste(filename, ".png", sep = ""),
+#        width = 7, height = 5, units = "in")
+# ggsave(stacked.DQfreq.RedOrBlue.facetByDS,
+#        filename = paste(filename, ".pdf", sep = ""),
+#        device = cairo_pdf, width = 7, height = 5, units = "in")
+# 
+# 
+# stacked.DQfreq.RedOrBlue.facetByCD <- plotData.HLADQ_freq %>%
+#   separate(Group, into = c("DS", "CD"), sep = "\n", extra = "merge", remove = FALSE) %>%
+#   ggplot(aes(x = DS, y = `Frequency (%)`, color = `HLA-DQ genotype`, fill = `HLA-DQ genotype`)) +
+#   geom_bar(position = "stack", stat = "identity") +
+#   xlab("") +
+#   ylab("Frequency (%)") +
+#   theme(legend.title = element_blank(),
+#         aspect.ratio = 1) +
+#   scale_colour_manual(values = custom.RdOrBlue) +
+#   scale_fill_manual(values = custom.RdOrBlue) +
+#   facet_wrap(~CD)
+#   ggtitle("HLA-DQ genotype frequency by karyotype and Celiac status") # +
+# 
+# stacked.DQfreq.RedOrBlue.facetByCD
+# 
+# setwd(dir.Figures)
+# filename <- "MEGA_022322_StackedBarplot_HLADQ_Genotype_Frequencies_RdOrBu_FacetByCD_v0.1_JRS"
+# ggsave(stacked.DQfreq.RedOrBlue.facetByCD,
+#        filename = paste(filename, ".png", sep = ""),
+#        width = 7, height = 5, units = "in")
+# ggsave(stacked.DQfreq.RedOrBlue.facetByCD,
+#        filename = paste(filename, ".pdf", sep = ""),
+#        device = cairo_pdf, width = 7, height = 5, units = "in")
+```
+
+```{bash}
+cd '/Users/shawjes/Dropbox/EspinosaGroup/ANALYSIS/Celiac_MultiOmics/GRS/DSMIG_Shared/Manuscript/Figures'
+mkdir 'Archive'
+mv 'MEGA_022322_StackedBarplot_HLADQ_Genotype_Frequencies_RedBlue_FacetByDS_v0.1_JRS.pdf' './Archive'
+mv 'MEGA_022322_StackedBarplot_HLADQ_Genotype_Frequencies_RedBlue_FacetByCD_v0.1_JRS.pdf' './Archive'
+mv 'MEGA_022322_StackedBarplot_HLADQ_Genotype_Frequencies_RedBlue_FacetByDS_v0.1_JRS.png' './Archive'
+mv 'MEGA_022322_StackedBarplot_HLADQ_Genotype_Frequencies_RedBlue_FacetByCD_v0.1_JRS.png' './Archive'
+mv 'MEGA_022322_StackedBarplot_HLADQ_Genotype_Frequencies_RdOrBu_FacetByDS_v0.1_JRS.pdf' './Archive'
+mv 'MEGA_022322_StackedBarplot_HLADQ_Genotype_Frequencies_RdOrBu_FacetByCD_v0.1_JRS.pdf' './Archive'
+mv 'MEGA_022322_StackedBarplot_HLADQ_Genotype_Frequencies_RdOrBu_FacetByDS_v0.1_JRS.png' './Archive'
+mv 'MEGA_022322_StackedBarplot_HLADQ_Genotype_Frequencies_RdOrBu_FacetByCD_v0.1_JRS.png' './Archive'
+```
+
+```{bash}
+cd '/Users/shawjes/Dropbox/EspinosaGroup/ANALYSIS/Celiac_MultiOmics/GRS/DSMIG_Shared/Manuscript/Figures/Archive'
+ls
+```
+
+#### Make a dataframe to facilitate summarizing and analyzing DQ permissivity by sex and CD in DS
+```{r}
+analysisData.PermissiveVsNon <- analysisData %>%
+  filter(grepl("DQ", Variant)==TRUE | Variant == "X/X") %>%
+  filter(Dosage != 0) %>%
+  rename(`HLA-DQ genotype` = Variant) %>%
+  mutate(`HLA-DQ genotype category` = ifelse(`HLA-DQ genotype` %in% `Permissive, high risk`, "Permissive, high risk",
+                                             ifelse(`HLA-DQ genotype` %in% `Permissive, intermediate risk`, "Permissive, intermediate risk",
+                                                    ifelse(`HLA-DQ genotype` %in% `Permissive low risk`, "Permissive, low risk",
+                                                           ifelse(`HLA-DQ genotype` %in% `Non-permissive`, "Non-permissive", NA)))),
+         `HLA-DQ genotype` = factor(`HLA-DQ genotype`,
+                                    levels = c("DQ2.5/DQ2.5", "DQ2.5/DQ2.2", "DQ7.5/DQ2.5",
+                                               "DQ2.5/DQ8", "DQ7.5/DQ2.2", "DQ2.5/X", "DQ8/DQ8", "DQ2.2/DQ8", "DQ7.5/DQ8", "DQ8/X",
+                                               "DQ2.2/X", "DQ2.2/DQ2.2",
+                                               "DQ7.5/DQ7.5", "DQ7.5/X", "X/X"))) %>%
+  select(FamilyID, RecordID, MEGA.FID, MEGA.IID, MEGA.LabID,
+         `HLA-DQ genotype category`,
+         Karyotype, Celiac, Sex, Female, Race, Ethnicity, Race_Ethnicity,
+         PC1:PC10) %>%
+  unique() %>%
+  mutate(Permissive_DQ_genotype = ifelse(grepl("Non-permissive", `HLA-DQ genotype category`)==TRUE, 0,
+                                         ifelse(grepl("Permissive", `HLA-DQ genotype category`)==TRUE, 1, NA)),
+         `HLA-DQ genotype category` = factor(`HLA-DQ genotype category`,
+                                             levels = c("Non-permissive",
+                                                        "Permissive, low risk",
+                                                        "Permissive, intermediate risk",
+                                                        "Permissive, high risk")))
+
+analysisData.PermissiveVsNon
+```
+
+```{r}
+set.seed(1234)
+fit.DQpermissivity.unadj <- glm(Celiac ~ Permissive_DQ_genotype, data = analysisData.PermissiveVsNon)
+
+set.seed(1234)
+fit.DQriskCat.unadj <- glm(Celiac ~ `HLA-DQ genotype category`, data = analysisData.PermissiveVsNon)
+
+tidy.DQpermissivity.unadj <- fit.DQpermissivity.unadj %>%
+  tidy(conf.int = TRUE) %>%
+  filter(term != "(Intercept)") %>%
+  select(-c(std.error, statistic)) %>%
+  rename(logOR = estimate, P = p.value)
+
+tidy.DQriskCat.unadj <- fit.DQriskCat.unadj %>%
+  tidy(conf.int = TRUE) %>%
+  filter(term != "(Intercept)") %>%
+  select(-c(std.error, statistic)) %>%
+  rename(logOR = estimate, P = p.value)
+
+tidy.DQpermissivity.unadj
+tidy.DQriskCat.unadj
+
+library(emmeans)
+emmeans.DQpermissivity.unadj <- emmeans(fit.DQriskCat.unadj, revpairwise ~ `HLA-DQ genotype category`)$emmeans %>% as.data.frame()
+contrasts.DQpermissivity.unadj <- emmeans(fit.DQriskCat.unadj, revpairwise ~ `HLA-DQ genotype category`)$contrasts %>% as.data.frame() %>%
+  separate(contrast, into = c("Group1", "Group0 (reference)"), sep = "-", extra = "merge", remove = FALSE) %>%
+  select(contrast, Group1, `Group0 (reference)`, estimate, p.value, everything()) %>%
+  rename(P = p.value) %>%
+  mutate(Interpretation = ifelse(contrast == "Permissive, low risk - (Non-permissive)",
+                                 "Given CD status, no significant difference in odds of a low-risk permissive genotype vs. a non-permissive genotype.",
+                                 
+                                 ifelse(contrast == "Permissive, intermediate risk - (Non-permissive)",
+                                 "Given CD status, significant difference in odds of a intermediate-risk permissive genotype vs. a non-permissive genotype.",
+                                 
+                                 ifelse(contrast == "Permissive, intermediate risk - Permissive, low risk",
+                                 "Given CD status, no significant difference in odds of a intermediate-risk permissive genotype vs. a low-risk permissive genotype.",
+                                 
+                                 ifelse(contrast == "Permissive, high risk - (Non-permissive)",
+                                 "Given CD status, no significant difference in odds of a high-risk permissive genotype vs. a non-permissive genotype.",
+                                 
+                                 ifelse(contrast == "Permissive, high risk - Permissive, low risk",
+                                 "Given CD status, no significant difference in odds of a high-risk permissive genotype vs. a low-risk permissive genotype.",
+                                 
+                                 ifelse(contrast == "Permissive, high risk - Permissive, intermediate risk",
+                                 "Given CD status, no significant difference in odds of a high-risk permissive genotype vs. a intermediate-risk permissive genotype.",
+                                 
+                                 NA)))))))
+  
+emmeans.DQpermissivity.unadj
+contrasts.DQpermissivity.unadj
+
+augment(fit.DQriskCat.unadj, data = analysisData.PermissiveVsNon) %>%
+  select(RecordID, MEGA.IID, `HLA-DQ genotype category`, Celiac, .fitted) %>%
+  arrange(.fitted) %>%
+  mutate(Celiac.predicted = ifelse(.fitted > 0.50, 1, 0))
+
+analysisData.PermissiveVsNon$predicted_Celiac <- predict(fit.DQriskCat.unadj, data = analysisData.PermissiveVsNon, type = "response")
+
+analysisData.PermissiveVsNon %>%
+  select(RecordID, MEGA.IID, `HLA-DQ genotype category`, Celiac, predicted_Celiac)
+```
+
+
+```{r}
+set.seed(1234)
+fit.DQpermissivity.adj <- glm(Celiac ~ Permissive_DQ_genotype + PC1 + PC2 + PC3 + PC4 + PC5, data = analysisData.PermissiveVsNon)
+
+set.seed(1234)
+fit.DQriskCat.adj <- glm(Celiac ~ `HLA-DQ genotype category` + PC1 + PC2 + PC3 + PC4 + PC5, data = analysisData.PermissiveVsNon)
+
+tidy.DQpermissivity.adj <- fit.DQpermissivity.adj %>%
+  tidy(conf.int = TRUE) %>%
+  filter(term != "(Intercept)") %>%
+  select(-c(std.error, statistic)) %>%
+  rename(logOR = estimate, P = p.value)
+
+tidy.DQriskCat.adj <- fit.DQriskCat.adj %>%
+  tidy(conf.int = TRUE) %>%
+  filter(term != "(Intercept)") %>%
+  select(-c(std.error, statistic)) %>%
+  rename(logOR = estimate, P = p.value)
+
+tidy.DQpermissivity.adj
+tidy.DQriskCat.adj
+
+library(emmeans)
+emmeans.DQpermissivity.adj <- emmeans(fit.DQriskCat.adj, revpairwise ~ `HLA-DQ genotype category`)$emmeans %>% as.data.frame()
+contrasts.DQpermissivity.adj <- emmeans(fit.DQriskCat.adj, revpairwise ~ `HLA-DQ genotype category`)$contrasts %>% as.data.frame() %>%
+  separate(contrast, into = c("Group1", "Group0 (reference)"), sep = "-", extra = "merge", remove = FALSE) %>%
+  select(contrast, Group1, `Group0 (reference)`, estimate, p.value, everything()) %>%
+  rename(P = p.value) %>%
+  mutate(Interpretation = ifelse(contrast == "Permissive, low risk - (Non-permissive)",
+                                 "Given CD status, no significant difference in odds of a low-risk permissive genotype vs. a non-permissive genotype.",
+                                 
+                                 ifelse(contrast == "Permissive, intermediate risk - (Non-permissive)",
+                                 "Given CD status, significant difference in odds of a intermediate-risk permissive genotype vs. a non-permissive genotype.",
+                                 
+                                 ifelse(contrast == "Permissive, intermediate risk - Permissive, low risk",
+                                 "Given CD status, no significant difference in odds of a intermediate-risk permissive genotype vs. a low-risk permissive genotype.",
+                                 
+                                 ifelse(contrast == "Permissive, high risk - (Non-permissive)",
+                                 "Given CD status, no significant difference in odds of a high-risk permissive genotype vs. a non-permissive genotype.",
+                                 
+                                 ifelse(contrast == "Permissive, high risk - Permissive, low risk",
+                                 "Given CD status, no significant difference in odds of a high-risk permissive genotype vs. a low-risk permissive genotype.",
+                                 
+                                 ifelse(contrast == "Permissive, high risk - Permissive, intermediate risk",
+                                 "Given CD status, no significant difference in odds of a high-risk permissive genotype vs. a intermediate-risk permissive genotype.",
+                                 
+                                 NA)))))))
+  
+emmeans.DQpermissivity.adj
+contrasts.DQpermissivity.adj
+
+augment(fit.DQriskCat.adj, data = analysisData.PermissiveVsNon) %>%
+  select(RecordID, MEGA.IID, `HLA-DQ genotype category`, Celiac, .fitted) %>%
+  arrange(.fitted) %>%
+  mutate(Celiac.predicted = ifelse(.fitted > 0.50, 1, 0))
+
+analysisData.PermissiveVsNon$predicted_Celiac <- predict(fit.DQriskCat.adj, data = analysisData.PermissiveVsNon, type = "response")
+
+analysisData.PermissiveVsNon %>%
+  select(RecordID, MEGA.IID, `HLA-DQ genotype category`, Celiac, predicted_Celiac)
+```
+
+
+#### Summarize DQ permissivity by sex and CD by sex
+```{r}
+table.DQpermissivity_by_Sex.long <- analysisData.PermissiveVsNon %>%
+   mutate(Celiac = ifelse(Celiac == 0, "+DS -CD",
+                         ifelse(Celiac == 1, "+DS +CD", NA)),
+         Sex = ifelse(Sex == "Male", "XY", ifelse(Sex == "Female", "XX", NA))) %>%
+  group_by(`HLA-DQ genotype category`, Sex) %>%
+  summarise(N = n()) %>%
+  ungroup() %>%
+  group_by(`HLA-DQ genotype category`) %>%
+  mutate(Total = sum(N)) %>%
+  ungroup() %>%
+  mutate(Pct = round(100*N/Total, digits = 1),
+         `N (%)` = paste(N, " (", Pct, ")", sep = "")) %>%
+  select(`HLA-DQ genotype category`, Sex, `N (%)`)
+
+table.DQpermissivity_by_Sex.wide <- table.DQpermissivity_by_Sex.long %>%
+  spread(key = Sex, value = `N (%)`)
+
+table.DQpermissivity_by_CeliacSex.wide <- analysisData.PermissiveVsNon %>%
+  mutate(Celiac = ifelse(Celiac == 0, "+DS -CD",
+                         ifelse(Celiac == 1, "+DS +CD", NA)),
+         Sex = ifelse(Sex == "Male", "XY", ifelse(Sex == "Female", "XX", NA)),
+         Sex_Celiac = paste(Sex, " ", Celiac, sep = "")) %>%
+  group_by(`HLA-DQ genotype category`, Sex_Celiac) %>%
+  summarise(N = n()) %>%
+  ungroup() %>%
+  group_by(`HLA-DQ genotype category`) %>%
+  mutate(Total = sum(N),
+         Pct = round(100*N/Total, digits = 1),
+         `N (%)` = paste(N, " (", Pct, ")", sep = "")) %>%
+  select(`HLA-DQ genotype category`, Sex_Celiac, `N (%)`) %>%
+  unique() %>%
+  spread(key = Sex_Celiac, value = `N (%)`) %>%
+  mutate(`XX +DS +CD` = ifelse(is.na(`XX +DS +CD`), "0 (0)", `XX +DS +CD`))
+
+table.DQpermissivity_by_CeliacSex.long <- table.DQpermissivity_by_CeliacSex.wide %>%
+  gather(`XX +DS -CD`:`XY +DS +CD`, key = "Sex_DS_CD", value = "N (%)")
+
+table.DQpermissivity_by_Sex.long
+table.DQpermissivity_by_Sex.wide
+table.DQpermissivity_by_CeliacSex.long
+table.DQpermissivity_by_CeliacSex.wide
+
+setwd(dir.Tables)
+fwrite(table.DQpermissivity_by_Sex.long, "MEGA_022322_HLADQgenotype_PermissiveVsNon_FreqBySex_LONG_v0.1_JRS.csv")
+fwrite(table.DQpermissivity_by_Sex.wide, "MEGA_022322_HLADQgenotype_PermissiveVsNon_FreqBySex_WIDE_v0.1_JRS.csv")
+fwrite(table.DQpermissivity_by_Sex.long, "MEGA_022322_HLADQgenotype_PermissiveVsNon_FreqBySex_LONG_v0.1_JRS.tsv", sep = "\t")
+fwrite(table.DQpermissivity_by_Sex.wide, "MEGA_022322_HLADQgenotype_PermissiveVsNon_FreqBySex_WIDE_v0.1_JRS.tsv", sep = "\t")
+
+fwrite(table.DQpermissivity_by_CeliacSex.long, "MEGA_022322_HLADQgenotype_PermissiveVsNon_FreqBySexCD_LONG_v0.1_JRS.csv")
+fwrite(table.DQpermissivity_by_CeliacSex.wide, "MEGA_022322_HLADQgenotype_PermissiveVsNon_FreqBySexCD_WIDE_v0.1_JRS.csv")
+fwrite(table.DQpermissivity_by_CeliacSex.long, "MEGA_022322_HLADQgenotype_PermissiveVsNon_FreqBySexCD_LONG_v0.1_JRS.tsv", sep = "\t")
+fwrite(table.DQpermissivity_by_CeliacSex.wide, "MEGA_022322_HLADQgenotype_PermissiveVsNon_FreqBySexCD_WIDE_v0.1_JRS.tsv", sep = "\t")
+```
+
+#### Make draft stacked barplot of permissivs vs. non-permissive DQ genotype frequencies 
+```{r}
+# Setting and modifying theme for plots
+theme_set(theme_gray(base_size = 12, base_family = "Arial") +
+            theme(panel.border = element_rect(colour="black", fill = "transparent"),
+                  plot.title = element_text(face="bold", hjust = 0, size = 12), # lineheight=.8, size=20,
+                  axis.text = element_text(color="black", size = 12), 
+                  axis.text.x = element_text(angle = 0, hjust = NULL),
+                  strip.background = element_rect(colour="black", fill = "light grey", size = 1), # adjusts facet label borders (if any)
+                  panel.background = element_blank(),
+                  panel.grid = element_blank()
+          ))
+
+colfunc.RdOr <- colorRampPalette(c(brewer.pal(n = 9, name = "OrRd")[3],
+                                   brewer.pal(n=9, name = "Reds")[7]))
+colfunc.Blues <- colorRampPalette(c("white", "#08519C"))
+colfunc.Reds <- colorRampPalette(c(brewer.pal(n = 9, name = "Reds")[1],
+                                   brewer.pal(n=9, name = "Reds")[8]))
+custom.RedBlue3 <- c( rev(colfunc.Reds(15)[15]),
+                     rev(colfunc.Reds(15)[2:12]),
+                     colfunc.Blues(6) %>% tail(n=3) )
+custom.RdOrBlue <- c( rev(colfunc.Reds(15)[15]),
+                      rev(colfunc.RdOr(12)) %>% tail(n=11),
+                     colfunc.Blues(6) %>% tail(n=3) )
+
+HLADQ_freq.PermissiveVsNonPermissive.long %>%
+   mutate(Group = gsub(" ", "\n", Group),
+          Group = factor(Group, levels = c("-DS\n-CD", "+DS\n-CD", "-DS\n+CD", "+DS\n+CD"))) %>%
+  mutate(`HLA-DQ genotype category` = factor(`HLA-DQ genotype category`, levels = c("Non-permissive", "Permissive"))) %>%
+  ggplot(aes(x = Group, y = `Frequency (%)`,
+             color = `HLA-DQ genotype category`,
+             fill = `HLA-DQ genotype category`)) +
+  geom_bar(position = "stack", stat = "identity", alpha = 0.8) +
+  xlab("") +
+  ylab("Frequency (%)") +
+  theme(legend.title = element_blank(),
+        legend.position = "bottom",
+        aspect.ratio = 1) +
+  scale_fill_manual(values = c(option6[[6]], "grey85")) +
+  scale_colour_manual(values = c(option6[[6]], "grey")) +
+  ggtitle("HLA-DQ genotype frequency by DS and CD")
+
+setwd(dir.Figures)
+filename <- "MEGA_022322_StackedBarplot_HLADQ_Genotype_Frequencies_PermissiveVsNon_v0.1_JRS"
+ggsave(filename = paste(filename, ".png", sep = ""),
+       width = 5, height = 5, units = "in")
+ggsave(filename = paste(filename, ".pdf", sep = ""),
+       device = cairo_pdf, width = 5, height = 5, units = "in")
+
+HLADQ_freq.PermissiveVsNonPermissive.long %>%
+   mutate(Group = gsub(" ", "\n", Group),
+          Group = factor(Group, levels = c("-DS\n-CD", "+DS\n-CD", "-DS\n+CD", "+DS\n+CD"))) %>%
+  mutate(`HLA-DQ genotype category` = factor(`HLA-DQ genotype category`, levels = c("Non-permissive", "Permissive"))) %>%
+  ggplot(aes(x = Group, y = `Frequency (%)`,
+             color = `HLA-DQ genotype category`,
+             fill = `HLA-DQ genotype category`)) +
+  geom_bar(position = "stack", stat = "identity", color = "white") +
+  xlab("") +
+  ylab("Frequency (%)") +
+  theme(legend.title = element_blank(),
+        legend.position = "bottom",
+        aspect.ratio = 1) +
+  scale_fill_manual(values = rev(c(custom.RedBlue3[[2]], custom.RedBlue3[[14]]))) +
+  scale_colour_manual(values = rev(c(custom.RedBlue3[[1]], custom.RedBlue3[[15]]))) +
+  ggtitle("HLA-DQ genotype frequency by DS and CD")
+
+setwd(dir.Figures)
+filename <- "MEGA_022322_StackedBarplot_HLADQ_Genotype_Frequencies_PermissiveVsNon_RedBlue_v0.1_JRS"
+ggsave(filename = paste(filename, ".png", sep = ""),
+       width = 5, height = 5, units = "in")
+ggsave(filename = paste(filename, ".pdf", sep = ""),
+       device = cairo_pdf, width = 5, height = 5, units = "in")
+```
+
+```{bash}
+cd '/Users/shawjes/Dropbox/EspinosaGroup/ANALYSIS/Celiac_MultiOmics/GRS/DSMIG_Shared/Manuscript/Figures'
+mv 'MEGA_022322_StackedBarplot_HLADQ_Genotype_Frequencies_PermissiveVsNon_RedBlue_v0.1_JRS' './Archive'
+
+cd '/Users/shawjes/Dropbox/EspinosaGroup/ANALYSIS/Celiac_MultiOmics/GRS/DSMIG_Shared/Manuscript/Figures/Archive'
+ls
+```
+
+```{r}
+analysisData.PermissiveVsNon$`HLA-DQ genotype category` <- factor(analysisData.PermissiveVsNon$`HLA-DQ genotype category`,
+                                                                  levels = c("Non-permissive", "Permissive, low risk", "Permissive, intermediate risk", "Permissive, high risk"))
+
+analysisData.PermissiveVsNon
+
+
+glm(Celiac ~ `HLA-DQ genotype category`,
+    family = binomial(link = "logit"),
+    data = analysisData.PermissiveVsNon) %>% AIC();
+glm(Celiac ~ `HLA-DQ genotype category` + PC1 + PC2 + PC3 + PC4 + PC5,
+    family = binomial(link = "logit"),
+    data = analysisData.PermissiveVsNon) %>% AIC();
+glm(Celiac ~ `HLA-DQ genotype category` + Female + PC1 + PC2 + PC3 + PC4 + PC5,
+    family = binomial(link = "logit"),
+    data = analysisData.PermissiveVsNon) %>% AIC();
+glm(Celiac ~ `HLA-DQ genotype category`*Female + PC1 + PC2 + PC3 + PC4 + PC5,
+    family = binomial(link = "logit"),
+    data = analysisData.PermissiveVsNon) %>% AIC()
+glm(Celiac ~ `HLA-DQ genotype category` + PC1 + PC2 + PC3 + PC4 + PC5,
+    family = binomial(link = "logit"),
+    data = analysisData.PermissiveVsNon) %>% vif();
+glm(Celiac ~ `HLA-DQ genotype category` + Female + PC1 + PC2 + PC3 + PC4 + PC5,
+    family = binomial(link = "logit"),
+    data = analysisData.PermissiveVsNon) %>% vif()
+glm(Celiac ~ `HLA-DQ genotype category`*Female + PC1 + PC2 + PC3 + PC4 + PC5,
+    family = binomial(link = "logit"),
+    data = analysisData.PermissiveVsNon) %>% vif()
+# Ideal model for this question involves 5 PCs and fortunately AIC and vif indicate that that's fine.
+
+
+glm(Celiac ~ Female,
+    family = binomial(link = "logit"),
+    data = analysisData.PermissiveVsNon) %>%
+  tidy()
+
+
+glm(Celiac ~ `HLA-DQ genotype category` + PC1 + PC2 + PC3 + PC4 + PC5,
+    family = binomial(link = "logit"),
+    data = analysisData.PermissiveVsNon) %>%
+  tidy()
+glm(Celiac ~ `HLA-DQ genotype category` + Female + PC1 + PC2 + PC3 + PC4 + PC5,
+    family = binomial(link = "logit"),
+    data = analysisData.PermissiveVsNon) %>%
+  tidy()
+glm(Celiac ~ `HLA-DQ genotype category`*Female + PC1 + PC2 + PC3 + PC4 + PC5,
+    family = binomial(link = "logit"),
+    data = analysisData.PermissiveVsNon) %>%
+  tidy()
+
+
+glm(Female ~ `HLA-DQ genotype category` + PC1 + PC2 + PC3 + PC4 + PC5,
+    family = binomial(link = "logit"),
+    data = analysisData.PermissiveVsNon) %>%
+  tidy()
+
+glm(`HLA-DQ genotype category` ~ Female + PC1 + PC2 + PC3 + PC4 + PC5,
+    family = binomial(link = "logit"),
+    data = analysisData.PermissiveVsNon) %>%
+  tidy()
+```
+
+
+#### Make stacked barplot of HLA-DQ genotype frequencies in DS by sex and CD
+```{r}
+# Setting and modifying theme for plots
+theme_set(theme_gray(base_size = 12, base_family = "Arial") +
+            theme(panel.border = element_rect(colour="black", fill = "transparent"),
+                  plot.title = element_text(face="bold", hjust = 0, size = 12), # lineheight=.8, size=20,
+                  axis.text = element_text(color="black", size = 12), 
+                  axis.text.x = element_text(angle = 0, hjust = NULL),
+                  strip.background = element_rect(colour="black", fill = "light grey", size = 1), # adjusts facet label borders (if any)
+                  panel.background = element_blank(),
+                  panel.grid = element_blank()
+          ))
+
+table.DQpermissivity_by_Sex.long %>%
+  separate(`N (%)`, into = c("N", "Pct"), sep = " ", extra = "merge", remove = FALSE) %>%
+  mutate(Pct = gsub ("[())]", "", Pct),
+         Pct = as.numeric(Pct)) %>%
+  select(-c(`N (%)`, N)) %>%
+  mutate(`HLA-DQ genotype category` = gsub(", ", "\n", `HLA-DQ genotype category`),
+         `HLA-DQ genotype category` = gsub("Non-permissive", "Non-permissive\nLow", `HLA-DQ genotype category`),
+         `HLA-DQ genotype category` = gsub(" risk", "", `HLA-DQ genotype category`),
+         `HLA-DQ genotype category` = gsub("intermediate", "Intermediate", `HLA-DQ genotype category`),
+         `HLA-DQ genotype category` = gsub("high", "High", `HLA-DQ genotype category`),
+         `HLA-DQ genotype category` = gsub("low", "Low", `HLA-DQ genotype category`)) %>%
+  mutate(`HLA-DQ genotype category` = factor(`HLA-DQ genotype category`,
+                                             levels = c("Non-permissive\nLow", "Permissive\nLow", "Permissive\nIntermediate", "Permissive\nHigh"))) %>%
+  #mutate(`HLA-DQ genotype category` = factor(`HLA-DQ genotype category`, levels = c("Non-permissive", "Permissive"))) %>%
+  ggplot(aes(x = `HLA-DQ genotype category`, y = Pct,
+             color = Sex,
+             fill = Sex)) +
+  geom_bar(position = "stack", stat = "identity", alpha = 0.8) +
+  xlab("") +
+  ylab("Frequency (%)") +
+  theme(legend.title = element_blank(),
+        legend.position = "bottom",
+        aspect.ratio = 0.7) +
+  scale_fill_manual(values = rev(c(option6[[6]], "grey85"))) +
+  scale_colour_manual(values = rev(c(option6[[6]], "grey"))) +
+  ggtitle("HLA-DQ genotype frequency in DS by sex") +
+  geom_hline(yintercept = 50, linetype = "dashed")
+
+setwd(dir.Figures)
+filename <- "MEGA_022322_StackedBarplot_HLADQ_Genotype_Frequencies_PermissiveRiskCat_colorBySex_v0.1_JRS"
+ggsave(filename = paste(filename, ".png", sep = ""),
+       width = 7, height = 5, units = "in")
+ggsave(filename = paste(filename, ".pdf", sep = ""),
+       device = cairo_pdf, width = 7, height = 5, units = "in")
+
+
+table.DQpermissivity_by_CeliacSex.long %>%
+  separate(`N (%)`, into = c("N", "Pct"), sep = " ", extra = "merge", remove = FALSE) %>%
+  mutate(Pct = gsub ("[())]", "", Pct),
+         Pct = as.numeric(Pct)) %>%
+  select(-c(`N (%)`, N)) %>%
+  mutate(`HLA-DQ genotype category` = gsub(", ", "\n", `HLA-DQ genotype category`),
+         `HLA-DQ genotype category` = gsub("Non-permissive", "Non-permissive\nLow", `HLA-DQ genotype category`),
+         `HLA-DQ genotype category` = gsub(" risk", "", `HLA-DQ genotype category`),
+         `HLA-DQ genotype category` = gsub("intermediate", "Intermediate", `HLA-DQ genotype category`),
+         `HLA-DQ genotype category` = gsub("high", "High", `HLA-DQ genotype category`),
+         `HLA-DQ genotype category` = gsub("low", "Low", `HLA-DQ genotype category`)) %>%
+  mutate(`HLA-DQ genotype category` = factor(`HLA-DQ genotype category`,
+                                             levels = c("Non-permissive\nLow", "Permissive\nLow", "Permissive\nIntermediate", "Permissive\nHigh"))) %>%
+  mutate(Sex_DS_CD = gsub(" ", "\n", Sex_DS_CD)) %>%
+  mutate(Sex_DS_CD = gsub("[+]DS\n", "", Sex_DS_CD)) %>%
+  #mutate(`HLA-DQ genotype category` = factor(`HLA-DQ genotype category`, levels = c("Non-permissive", "Permissive"))) %>%
+  ggplot(aes(x = `HLA-DQ genotype category`, y = Pct,
+             color = Sex_DS_CD,
+             fill = Sex_DS_CD)) +
+  geom_bar(position = "stack", stat = "identity" #,
+           #alpha = 0.8
+           ) +
+  xlab("") +
+  ylab("Frequency (%)") +
+  theme(legend.title = element_blank(),
+        legend.position = "bottom",
+        aspect.ratio = 0.7) +
+  scale_fill_manual(values = rev(c(option6[[6]],option6[[9]],
+                                   "grey65", "grey90"))) +
+  scale_colour_manual(values = rev(c(option6[[6]],option6[[9]],
+                                   "grey65", "grey90"))) +
+  ggtitle("HLA-DQ genotype category frequency in DS by sex and CD") +
+  geom_hline(yintercept = 50, linetype = "dashed")
+
+setwd(dir.Figures)
+filename <- "MEGA_022322_StackedBarplot_HLADQ_Genotype_Frequencies_PermissiveRiskCat_DScolorBySexCD_v0.1_JRS"
+ggsave(filename = paste(filename, ".png", sep = ""),
+       width = 7, height = 5, units = "in")
+ggsave(filename = paste(filename, ".pdf", sep = ""),
+       device = cairo_pdf, width = 7, height = 5, units = "in")
+```
+
+
+##### Read in supplemental tables from Sharp et al., 2019
+```{r}
+setwd(dir)
+Table_S2 <- read.xlsx("apt15826-sup-0001-supinfo.xlsx", sheet = "Table S2", startRow = 3) %>%
+  separate(`Odds.Ratio.[95%.CI]`, into = c("OR", "CI"), sep = " ", extra = "merge", remove = TRUE) %>%
+  rename(OR.GRS = OR,
+         CI.GRS = CI,
+         Weight.GRS = `Weight.(β)`)
+Table_S2
+
+setwd(dir)
+Table_S3 <- read.xlsx("apt15826-sup-0001-supinfo.xlsx", sheet = "Table S3", startRow = 3) %>%
+  rename(OR.GRS = OR,
+         Weight.GRS = `Weight.(β)`)
+Table_S3
+```
+
+#### Read in the variant-level analysis results
+```{r}
+setwd(dir.Results)
+results <- fread("MEGA_022322_Results_for_Inference_GRS_variants_adj5PCs_v0.1_JRS.csv")
+
+results
+```
+
+#### Check the sample sizes we have for each level of each genotype/SNP
+```{r}
+temp <- analysisData %>%
+  select(MEGA.IID, Celiac, Variant, Dosage) %>%
+  unique() %>%
+  split(., .$Variant)
+
+Dosage.histogram <- list()
+for ( i in 1:length(temp) ){
+  Dosage.histogram[[i]] <- temp[[i]] %>%
+    ggplot(aes(x = Dosage)) +
+    geom_histogram(color = GrayBlue[[2]], fill = GrayBlue[[2]]) +
+    ggtitle(names(temp)[[i]]) +
+    theme(aspect.ratio = 1) +
+    scale_x_continuous(breaks = c(0, 1, 2))
+}
+
+Dosage.histogram %>% head()
+
+Dosage.histogram %>% tail()
+
+hist.HLADQ_dosage <- analysisData %>%
+  select(MEGA.IID, Celiac, Variant, Dosage) %>%
+  left_join(Table_S3 %>% mutate(label = paste(Putative.Gene, "\n", SNP, " (", Allele, ")", sep = "")) %>% select(SNP, label) %>% unique(),
+            by = c("Variant" = "SNP")) %>%
+  mutate(label = ifelse(is.na(label), Variant, label)) %>%
+  unique() %>%
+  filter(Dosage > 0) %>%
+  filter(grepl("DQ", Variant)==TRUE | Variant=="X/X") %>%
+  ggplot(aes(x = Dosage)) +
+  geom_histogram(color = GrayBlue[[2]], fill = GrayBlue[[2]]) +
+  scale_x_continuous(breaks = c(0, 1)) +
+  scale_y_continuous(breaks = seq(from = 0, to = 201, by = 10)) +
+  facet_wrap(~ label, ncol = 6)
+
+hist.HLADQ_dosage.byCD <- analysisData %>%
+  select(MEGA.IID, Celiac, Variant, Dosage) %>%
+  left_join(Table_S3 %>% mutate(label = paste(Putative.Gene, "\n", SNP, " (", Allele, ")", sep = "")) %>% select(SNP, label) %>% unique(),
+            by = c("Variant" = "SNP")) %>%
+  mutate(label = ifelse(is.na(label), Variant, label)) %>%
+  mutate(Group = ifelse(Celiac == 0, "+DS -CD", ifelse(Celiac == 1, "+DS +CD", NA))) %>%
+  unique() %>%
+  filter(Dosage > 0) %>%
+  filter(grepl("DQ", Variant)==TRUE | Variant=="X/X") %>%
+  ggplot(aes(x = Dosage, color = Group, fill = Group)) +
+  geom_histogram() +
+  scale_colour_manual(values = GrayBlue) +
+  scale_fill_manual(values = GrayBlue) +
+  scale_x_continuous(breaks = c(0, 1)) +
+  scale_y_continuous(breaks = seq(from = 0, to = 201, by = 10)) +
+  facet_wrap(~ label, ncol = 6) +
+  theme(legend.position = "bottom", legend.title = element_blank())
+
+hist.nonHLADQ_dosage <- analysisData %>%
+  filter(grepl("DQ", Variant)==FALSE & Variant!="X/X") %>%
+  select(MEGA.IID, Celiac, Variant, Dosage) %>%
+  left_join(Table_S3 %>%
+              mutate(label = paste(Putative.Gene, "\n", SNP, " (", Allele, ")", sep = ""),
+                     joinBy = paste(SNP, " (", Allele, ")", sep = "")) %>%
+              unique() %>%
+              rename(Variant = SNP) %>%
+              select(Variant, label, joinBy),
+            by = c("Variant" = "joinBy")) %>%
+  unique() %>%
+  ggplot(aes(x = Dosage)) +
+  geom_histogram(color = GrayBlue[[2]], fill = GrayBlue[[2]]) +
+  scale_x_continuous(breaks = c(0, 1, 2)) +
+  facet_wrap(~ label, ncol = 8)
+
+summary.N_HLADQ_carriers <- analysisData %>%
+  filter(grepl("DQ", Variant)==TRUE | Variant=="X/X") %>%
+  filter(Dosage == 1) %>%
+  select(MEGA.IID, Celiac, Variant, Dosage) %>%
+  left_join(Table_S3 %>%
+              mutate(label = paste(Putative.Gene, "\n", SNP, " (", Allele, ")", sep = ""),
+                     joinBy = paste(SNP, " (", Allele, ")", sep = "")) %>%
+              unique() %>%
+              rename(Variant = SNP) %>%
+              select(Variant, label, joinBy),
+            by = c("Variant" = "joinBy")) %>%
+  unique() %>%
+  mutate(Group = ifelse(Celiac == 0, "+DS -CD", ifelse(Celiac == 1, "+DS +CD", NA))) %>%
+  group_by(Variant, Group) %>%
+  summarise(N_carriers = n()) %>%
+  ungroup() %>%
+  spread(key = Group, value = N_carriers) %>%
+  mutate(`+DS +CD` = ifelse(is.na(`+DS +CD`), 0, `+DS +CD`)) %>%
+  arrange(`+DS +CD`)
+summary.N_HLADQ_carriers
+
+hist.nonHLADQ_dosage.byCD <- analysisData %>%
+  filter(grepl("DQ", Variant)==FALSE & Variant!="X/X") %>%
+  select(MEGA.IID, Celiac, Variant, Dosage) %>%
+  left_join(Table_S3 %>%
+              mutate(label = paste(Putative.Gene, "\n", SNP, " (", Allele, ")", sep = ""),
+                     joinBy = paste(SNP, " (", Allele, ")", sep = "")) %>%
+              unique() %>%
+              rename(Variant = SNP) %>%
+              select(Variant, label, joinBy),
+            by = c("Variant" = "joinBy")) %>%
+  unique() %>%
+  mutate(Group = ifelse(Celiac == 0, "+DS -CD", ifelse(Celiac == 1, "+DS +CD", NA))) %>%
+  ggplot(aes(x = Dosage, color = Group, fill = Group)) +
+  geom_histogram() +
+  scale_x_continuous(breaks = c(0, 1, 2)) +
+  scale_colour_manual(values = GrayBlue) +
+  scale_fill_manual(values = GrayBlue) +
+  facet_wrap(~ label, ncol = 8) +
+  theme(legend.position = "bottom", legend.title = element_blank())
+
+hist.nonHLADQ_dosage
+hist.nonHLADQ_dosage.byCD
+
+hist.HLADQ_dosage
+hist.HLADQ_dosage.byCD
+
+setwd(dir.Figures)
+filename <- "MEGA_022322_Histogram_nonHLADQ_SNP_Dosage_v0.1_JRS"
+ggsave(plot = hist.nonHLADQ_dosage,
+       filename = paste(filename, ".png", sep = ""),
+       width = 11, height = 6.5, units = "in")
+ggsave(plot = hist.nonHLADQ_dosage,
+       filename = paste(filename, ".pdf", sep = ""),
+       device = cairo_pdf, width = 11, height = 6.5, units = "in")
+setwd(dir.Figures)
+filename <- "MEGA_022322_Histogram_nonHLADQ_SNP_Dosage_by_CD_v0.1_JRS"
+ggsave(plot = hist.nonHLADQ_dosage.byCD,
+       filename = paste(filename, ".png", sep = ""),
+       width = 11, height = 6.5, units = "in")
+ggsave(plot = hist.nonHLADQ_dosage.byCD,
+       filename = paste(filename, ".pdf", sep = ""),
+       device = cairo_pdf, width = 11, height = 6.5, units = "in")
+
+setwd(dir.Figures)
+filename <- "MEGA_022322_Histogram_HLADQ_Genotype_Dosage_v0.1_JRS"
+ggsave(plot = hist.HLADQ_dosage,
+       filename = paste(filename, ".png", sep = ""),
+       width = 9, height = 3, units = "in")
+ggsave(plot = hist.HLADQ_dosage,
+       filename = paste(filename, ".pdf", sep = ""),
+       device = cairo_pdf, width = 3, height = 9, units = "in")
+
+setwd(dir.Figures)
+filename <- "MEGA_022322_Histogram_HLADQ_Genotype_Dosage_by_CD_v0.1_JRS"
+ggsave(plot = hist.HLADQ_dosage.byCD,
+       filename = paste(filename, ".png", sep = ""),
+       width = 9, height = 3, units = "in")
+ggsave(plot = hist.HLADQ_dosage.byCD,
+       filename = paste(filename, ".pdf", sep = ""),
+       device = cairo_pdf, width = 9, height = 3, units = "in")
+```
+
+#### Create a table to show the ORs among D21s (as reported in the Sharp paper) and the ORs among T21s (our cohort)
+```{r}
+temp1 <- rbind(
+  (Table_S3 %>%
+     mutate(plotName1 = paste(SNP, " (", Allele, ")", sep = ""),
+            plotName2 = paste(Putative.Gene, " ", SNP, " (", Allele, ")", sep = "")) %>%
+     select(plotName1, plotName2, OR.GRS) %>%
+     mutate(OR.GRS = as.numeric(OR.GRS)) %>%
+     mutate(logOR.GRS = log(OR.GRS)) %>%
+     unique() %>%
+     rename(logOR.D21 = logOR.GRS,
+            OR.D21 = OR.GRS) %>%
+     filter(!is.na(OR.D21))),
+  (Table_S2 %>%
+     mutate(plotName1 = `HLA-DQ.Genotype`, plotName2 = `HLA-DQ.Genotype`) %>%
+     select(plotName1, plotName2, OR.GRS) %>%
+     mutate(OR.GRS = as.numeric(OR.GRS)) %>%
+     mutate(logOR.GRS = log(OR.GRS)) %>%
+     unique() %>%
+     rename(logOR.D21 = logOR.GRS,
+            OR.D21 = OR.GRS) %>%
+     filter(!is.na(OR.D21)))
+)
+   
+temp2 <- results %>%
+  rename(plotName1 = split_variable) %>%
+  select(plotName1, logOR, OR) %>%
+  rename(logOR.T21 = logOR, OR.T21 = OR)
+
+plotData.OR <- temp1 %>%
+  full_join(temp2, by = "plotName1") %>%
+  select(plotName1, OR.D21, OR.T21) %>%
+  gather(OR.D21:OR.T21, key = "Population", value = "OR") %>%
+  mutate(Population = gsub("OR.", "", Population)) %>%
+  full_join(temp1 %>% select(plotName1, plotName2) %>% unique(), by = "plotName1") %>%
+  select(plotName1, plotName2, Population, OR) %>%
+  spread(key = Population, value = OR) %>%
+  rename(OR.T21 = T21, OR.D21 = D21) %>%
+  mutate(`OR.T21 - OR.D21` = OR.T21 - OR.D21) %>%
+  arrange(desc(`OR.T21 - OR.D21`)) %>%
+  mutate(plotOrder = row_number()) %>%
+  select(-c(`OR.T21 - OR.D21`)) %>%
+  gather(OR.D21:OR.T21, key = "Population", value = "OR") %>%
+  select(plotName1, plotName2, plotOrder, Population, OR) %>%
+  arrange(plotOrder) %>%
+  mutate(Population = gsub("OR.", "", Population)) %>%
+  unique()
+
+plotData.logOR <- temp1 %>%
+  full_join(temp2, by = "plotName1") %>%
+  select(plotName1, logOR.D21, logOR.T21) %>%
+  gather(logOR.D21:logOR.T21, key = "Population", value = "logOR") %>%
+  mutate(Population = gsub("logOR.", "", Population)) %>%
+  full_join(temp1 %>% select(plotName1, plotName2) %>% unique(), by = "plotName1") %>%
+  full_join(plotData.OR %>% select(plotName1, plotOrder), by = "plotName1") %>%
+  select(plotName1, plotName2, plotOrder, Population, logOR) %>%
+  arrange(plotOrder) %>%
+  mutate(Population = gsub("logOR.", "", Population)) %>%
+  unique()
+
+plotData.OR
+plotData.logOR
+
+plotData.OR; plotData.OR %>% unique()
+plotData.logOR; plotData.logOR %>% unique()
+
+plotData.OR_logOR <- plotData.OR %>%
+  full_join(plotData.logOR, by = c("plotName1", "plotName2", "Population", "plotOrder")) %>%
+  select(plotName1, plotName2, plotOrder, Population, OR, logOR)
+plotData.OR_logOR
+
+setwd(dir.Tables)
+fwrite(plotData.OR_logOR, "MEGA_022322_PlotData_logORinD21_logORinT21_v0.1_JRS.csv")
+fwrite(plotData.OR_logOR, "MEGA_022322_PlotData_logORinD21_logORinT21_v0.1_JRS.tsv", sep = "\t")
+```
+
+
+```{r}
+keep_to_plot <- (plotData.OR_logOR %>%
+  filter(Population == "T21" & !is.na(OR)))$plotName2
+
+plot.logOR.allGRSvariants <- plotData.OR_logOR %>%
+  mutate(Population = gsub("D21", "D21*", Population)) %>%
+  filter(plotName2 != "DQ8/X" & plotName2 %in% keep_to_plot) %>%
+  ggplot(aes(x = reorder(plotName2, plotOrder), y = logOR, color = Population, fill = Population)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  theme(legend.position = "bottom",
+        legend.title = element_blank()) +
+  ylab("log(OR)") +
+  scale_colour_manual(values = GrayBlue) +
+  scale_fill_manual(values = GrayBlue) +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1),
+        plot.margin = unit(c(1,1,1,3), "cm")) +
+  xlab("") +
+  labs(caption = "*As reported in Sharp et al., 2019.")
+
+levels.HLADQ <- c("DQ2.5/DQ2.5",
+                  "DQ2.5/DQ2.2",
+                  "DQ7.5/DQ2.2",
+                  "DQ2.5/DQ8",
+                  "DQ2.5/X",
+                  "DQ7.5/DQ2.5",
+                  "DQ8/DQ8",
+                  "DQ2.2/DQ8",
+                  "DQ2.2/DQ2.2",
+                  "DQ7.5/DQ8",
+                  "DQ8/X",
+                  "DQ2.2/X",
+                  "DQ7.5/X",
+                  "DQ7.5/DQ7.5",
+                  "X/X")
+plot.logOR.HLADQ <- plotData.OR_logOR %>%
+  filter(grepl("DQ", plotName2)==TRUE | plotName2 == "X/X") %>%
+  mutate(plotName2 = factor(plotName2, levels = c(levels.HLADQ))) %>%
+  mutate(Population = gsub("D21", "D21*", Population)) %>%
+  filter(plotName2 != "DQ8/X" & plotName2 %in% keep_to_plot) %>%
+  ggplot(aes(x = plotName2, y = logOR, color = Population, fill = Population)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  theme(legend.position = "bottom",
+        legend.title = element_blank(),
+        aspect.ratio = 1) +
+  ylab("log(OR)") +
+  scale_colour_manual(values = GrayBlue) +
+  scale_fill_manual(values = GrayBlue) +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1),
+        plot.margin = unit(c(1,1,1,3), "cm")) +
+  xlab("") +
+  labs(caption = "*As reported in Sharp et al., 2019.")
+
+plot.logOR.nonHLADQ <- plotData.OR_logOR %>%
+  filter(grepl("DQ", plotName2)==FALSE & plotName2 != "X/X") %>%
+  mutate(Population = gsub("D21", "D21*", Population)) %>%
+  filter(plotName2 != "DQ8/X" & plotName2 %in% keep_to_plot) %>%
+  ggplot(aes(x = reorder(plotName2, plotOrder), y = logOR, color = Population, fill = Population)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  theme(legend.position = "bottom",
+        legend.title = element_blank()) +
+  ylab("log(OR)") +
+  scale_colour_manual(values = GrayBlue) +
+  scale_fill_manual(values = GrayBlue) +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1),
+        plot.margin = unit(c(1,1,1,3), "cm")) +
+  xlab("") +
+  labs(caption = "*As reported in Sharp et al., 2019.")
+
+plot.logOR.allGRSvariants
+plot.logOR.HLADQ
+plot.logOR.nonHLADQ
+
+setwd(dir.Figures)
+filename <- "MEGA_022322_Barplot_logOR_D21_T21_allGRSvariants_v0.1_JRS"
+ggsave(plot = plot.logOR.allGRSvariants,
+       filename = paste(filename, ".png", sep = ""),
+       width = 14, height = 8, units = "in")
+ggsave(plot = plot.logOR.allGRSvariants,
+       filename = paste(filename, ".pdf", sep = ""),
+       device = cairo_pdf, width = 14, height = 8, units = "in")
+
+setwd(dir.Figures)
+filename <- "MEGA_022322_Barplot_logOR_D21_T21_HLADQgenotypes_v0.1_JRS"
+ggsave(plot = plot.logOR.HLADQ,
+       filename = paste(filename, ".png", sep = ""),
+       width = 8, height = 8, units = "in")
+ggsave(plot = plot.logOR.HLADQ,
+       filename = paste(filename, ".pdf", sep = ""),
+       device = cairo_pdf, width = 8, height = 8, units = "in")
+
+setwd(dir.Figures)
+filename <- "MEGA_022322_Barplot_logOR_D21_T21_nonHLADQsnps_v0.1_JRS"
+ggsave(plot = plot.logOR.nonHLADQ,
+       filename = paste(filename, ".png", sep = ""),
+       width = 12, height = 8, units = "in")
+ggsave(plot = plot.logOR.nonHLADQ,
+       filename = paste(filename, ".pdf", sep = ""),
+       device = cairo_pdf, width = 12, height = 8, units = "in")
+```
+
+
+
+

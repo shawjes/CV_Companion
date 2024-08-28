@@ -1,0 +1,114 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+#### Load frequently used packages
+```{r}
+library(openxlsx)
+library(ggrepel)
+library(dplyr)
+library(tidyr)
+library(data.table)
+library(broom)
+library(broomExtra)
+library(tibble)
+library(sjstats)
+library(car)
+library(lme4)
+library(lmerTest)
+library(ggplot2)
+library(tibble)
+library(modelr)
+library(tidyverse)
+#library(miceadds)
+library(ggforce)
+require(openxlsx)
+library(tidyverse)
+library(caret)
+library(glmnet)
+library(ggplot2)
+select <- dplyr::select
+```
+
+#### Print session info for reproducibility
+```{r}
+sessionInfo()
+```
+
+#### Define in/out directory
+```{r}
+dir <- "/Users/shawjes/Dropbox/EspinosaGroup/ANALYSIS/Celiac_MultiOmics/GRS/DSMIG_Shared/Manuscript_Figure1/Data"
+```
+
+#### Put a copy of the fam file and bim file in the shared manuscript directory
+```{bash}
+cp -a '/Users/shawjes/Dropbox/EspinosaGroup/DATA_MAIN/MEGA/Plink/Espinosa_MEGA2_HTP_GS_08132019_updated_callrate_passing_QC.fam' \
+'/Users/shawjes/Dropbox/EspinosaGroup/ANALYSIS/Celiac_MultiOmics/GRS/DSMIG_Shared/Manuscript_Figure1/Data'
+
+cp -a '/Users/shawjes/Dropbox/EspinosaGroup/DATA_MAIN/MEGA/Plink/Espinosa_MEGA2_HTP_GS_08132019_updated_callrate_passing_QC.bim' \
+'/Users/shawjes/Dropbox/EspinosaGroup/ANALYSIS/Celiac_MultiOmics/GRS/DSMIG_Shared/Manuscript_Figure1/Data'
+```
+
+#### Check if the plink files were successfully copied into the shared directory
+```{r}
+list.files(dir) %>%
+  as.data.frame() %>%
+  `colnames<-`("filename") %>%
+  filter(grepl("bin", filename)==TRUE | grepl("fam", filename)==TRUE)
+```
+
+#### Read Plink *.bim file
+```{r}
+setwd(dir)
+MEGA.fam <- fread("Espinosa_MEGA2_HTP_GS_08132019_updated_callrate_passing_QC.fam") %>%
+  select(V1, V2) %>%
+  rename(MEGA.FID = V1, MEGA.IID = V2)
+
+MEGA.fam
+```
+
+#### Read in comorb data and produce a key mapping HTP FamilyID, RecordID, and LabIDs
+```{r}
+setwd("/Users/shawjes/Dropbox/EspinosaGroup/DATA_MAIN/META/OneDrive_1_2-17-2022")
+IDs.022021 <- fread("HTP_CLEANED_02_2021_v0.5_COMORB_MASTER_RecordID_vs_LabID.Labels.tsv") %>%
+  select(FamilyID, RecordID, LabID) %>%
+  filter(!is.na(LabID)) %>%
+  unique()
+
+IDs.022021
+```
+
+#### Test out parsing of MEGA IIDs to extract LabID used for genotyping
+```{r}
+MEGA.fam %>%
+  separate(MEGA.IID, into = c("a", "b", "c"), sep = "_", extra = "merge", remove = FALSE)
+
+MEGA.fam %>%
+  separate(MEGA.IID, into = c("a", "b", "c"), sep = "_", extra = "merge", remove = FALSE) %>%
+  filter(grepl("HTP", c)==FALSE & grepl("NA", c)==FALSE)
+
+print("Looks good, all rows in column c contain the 'HTP' prefix that indicates a participant sample.")
+```
+
+#### Produce an ID key that shows standard HTP/P4C identifiers alongside FID and IID that appear in the MEGA2 data received from CCPM
+```{r}
+MEGA.IDkey <- MEGA.fam %>%
+  separate(MEGA.IID, into = c("a", "b", "c"), sep = "_", extra = "merge", remove = FALSE) %>%
+  select(-c(a, b)) %>%
+  rename(MEGA.LabID = c) %>%
+  mutate(HTP_participant = ifelse(grepl("HTP", MEGA.LabID)==TRUE, "Yes", "No")) %>%
+  mutate(In_plink_fam = 1) %>%
+  left_join(IDs.022021, by = c("MEGA.LabID" = "LabID")) %>%
+  select(FamilyID, RecordID, MEGA.FID, MEGA.IID, MEGA.LabID, HTP_participant, In_plink_fam) %>%
+  unique()
+
+MEGA.IDkey
+```
+
+#### Save the ID key as a TSV and as a CSV
+```{r}
+setwd(dir)
+fwrite(MEGA.IDkey, "MEGA_041822_MEGA2_to_HTP_ID_key_v0.1_JRS.csv")
+fwrite(MEGA.IDkey, "MEGA_041822_MEGA2_to_HTP_ID_key_v0.1_JRS.tsv", sep = "\t")
+```

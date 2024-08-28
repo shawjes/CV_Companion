@@ -1,0 +1,61 @@
+HLA-DQ genotype,Group,N,Frequency,Genotype_category
+DQ2.5/DQ2.5, -DS -CD ,,0.019,"Permissive, high risk"
+DQ2.5/DQ2.2, -DS -CD ,,0.029,"Permissive, high risk"
+DQ7.5/DQ2.2, -DS -CD ,,0.025,"Permissive, intermediate risk"
+DQ2.5/DQ8, -DS -CD ,,0.025,"Permissive, intermediate risk"
+DQ2.5/X, -DS -CD ,,0.148,"Permissive, intermediate risk"
+DQ7.5/DQ2.5, -DS -CD ,,0.032,"Permissive, high risk"
+DQ8/DQ8, -DS -CD ,,0.008,"Permissive, intermediate risk"
+DQ2.2/DQ8, -DS -CD ,,0.02,"Permissive, intermediate risk"
+DQ2.2/DQ2.2, -DS -CD ,,0.011,"Permissive, low risk"
+DQ7.5/DQ8, -DS -CD ,,0.023,"Permissive, intermediate risk"
+DQ8/X, -DS -CD ,,0.106,"Permissive, intermediate risk"
+DQ2.2/X, -DS -CD ,,0.113,"Permissive, low risk"
+DQ7.5/X, -DS -CD ,,0.127,Non-permissive
+DQ7.5/DQ7.5, -DS -CD ,,0.021,Non-permissive
+X/X, -DS -CD ,,0.292,Non-permissive
+DQ2.5/DQ2.5, -DS +CD ,,0.16,"Permissive, high risk"
+DQ2.5/DQ2.2, -DS +CD ,,0.24,"Permissive, high risk"
+DQ7.5/DQ2.2, -DS +CD ,,0.076,"Permissive, intermediate risk"
+DQ2.5/DQ8, -DS +CD ,,0.06,"Permissive, intermediate risk"
+DQ2.5/X, -DS +CD ,,0.309,"Permissive, intermediate risk"
+DQ7.5/DQ2.5, -DS +CD ,,0.048,"Permissive, high risk"
+DQ8/DQ8, -DS +CD ,,0.009,"Permissive, intermediate risk"
+DQ2.2/DQ8, -DS +CD ,,0.016,"Permissive, intermediate risk"
+DQ2.2/DQ2.2, -DS +CD ,,0.005,"Permissive, low risk"
+DQ7.5/DQ8, -DS +CD ,,0.006,"Permissive, intermediate risk"
+DQ8/X, -DS +CD ,,0.023,"Permissive, intermediate risk"
+DQ2.2/X, -DS +CD ,,0.018,"Permissive, low risk"
+DQ7.5/X, -DS +CD ,,0.012,Non-permissive
+DQ7.5/DQ7.5, -DS +CD ,,0.002,Non-permissive
+X/X, -DS +CD ,,0.017,Non-permissive
+DQ2.5/DQ2.5, +DS -CD ,0,0,"Permissive, high risk"
+DQ2.5/DQ2.2, +DS -CD ,4,0.0216,"Permissive, high risk"
+DQ7.5/DQ2.2, +DS -CD ,8,0.0432,"Permissive, intermediate risk"
+DQ2.5/DQ8, +DS -CD ,2,0.0108,"Permissive, intermediate risk"
+DQ2.5/X, +DS -CD ,21,0.1135,"Permissive, intermediate risk"
+DQ7.5/DQ2.5, +DS -CD ,16,0.0865,"Permissive, high risk"
+DQ8/DQ8, +DS -CD ,0,0,"Permissive, intermediate risk"
+DQ2.2/DQ8, +DS -CD ,6,0.0324,"Permissive, intermediate risk"
+DQ2.2/DQ2.2, +DS -CD ,0,0,"Permissive, low risk"
+DQ7.5/DQ8, +DS -CD ,7,0.0378,"Permissive, intermediate risk"
+DQ8/X, +DS -CD ,20,0.1081,"Permissive, intermediate risk"
+DQ2.2/X, +DS -CD ,20,0.1081,"Permissive, low risk"
+DQ7.5/X, +DS -CD ,28,0.1514,Non-permissive
+DQ7.5/DQ7.5, +DS -CD ,0,0,Non-permissive
+X/X, +DS -CD ,53,0.2865,Non-permissive
+DQ2.5/DQ2.5, +DS +CD ,0,0,"Permissive, high risk"
+DQ2.5/DQ2.2, +DS +CD ,1,0.0526,"Permissive, high risk"
+DQ7.5/DQ2.2, +DS +CD ,1,0.0526,"Permissive, intermediate risk"
+DQ2.5/DQ8, +DS +CD ,1,0.0526,"Permissive, intermediate risk"
+DQ2.5/X, +DS +CD ,5,0.2632,"Permissive, intermediate risk"
+DQ7.5/DQ2.5, +DS +CD ,1,0.0526,"Permissive, high risk"
+DQ8/DQ8, +DS +CD ,0,0,"Permissive, intermediate risk"
+DQ2.2/DQ8, +DS +CD ,3,0.1579,"Permissive, intermediate risk"
+DQ2.2/DQ2.2, +DS +CD ,0,0,"Permissive, low risk"
+DQ7.5/DQ8, +DS +CD ,1,0.0526,"Permissive, intermediate risk"
+DQ8/X, +DS +CD ,0,0,"Permissive, intermediate risk"
+DQ2.2/X, +DS +CD ,4,0.2105,"Permissive, low risk"
+DQ7.5/X, +DS +CD ,1,0.0526,Non-permissive
+DQ7.5/DQ7.5, +DS +CD ,0,0,Non-permissive
+X/X, +DS +CD ,1,0.0526,Non-permissive

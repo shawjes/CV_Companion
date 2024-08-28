@@ -1,0 +1,673 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+library(data.table)
+library(skimr)
+library(openxlsx)
+library(ggrepel)
+library(dplyr)
+library(tidyr)
+library(broom)
+library(broomExtra)
+library(tibble)
+library(sjstats)
+library(car)
+library(lme4)
+library(lmerTest)
+library(ggplot2)
+library(tibble)
+library(modelr)
+library(tidyverse)
+#library(miceadds)
+library(ggforce)
+require(openxlsx)
+library(tidyverse)
+library(caret)
+library(glmnet)
+library(ggplot2)
+library(gridExtra)
+library(MASS) # rlm
+library(lmPerm)
+library(circlize)
+library(RColorBrewer)
+library(ComplexHeatmap)
+
+select <- dplyr::select
+filter <- dplyr::filter
+```
+
+#### Define the directories used in this script
+```{r}
+dir.IlluminaProductFiles <- "/Users/shawjes/Dropbox/EspinosaGroup/DATA_MAIN/MEGA/chr21_genotyping/Illumina_ProductFiles"
+dir.chr21_genotyping <- "/Users/shawjes/Dropbox/EspinosaGroup/DATA_MAIN/MEGA/chr21_genotyping"
+dir.chr21_idatQuants <- "/Users/shawjes/Dropbox/EspinosaGroup/DATA_MAIN/MEGA/chr21_genotyping/idatQuants"
+dir.GRSdata <- "/Users/shawjes/Dropbox/EspinosaGroup/ANALYSIS/Celiac_MultiOmics/GRS/DSMIG_Shared/Manuscript_Figure1/Data"
+dir.GRSplots <- "/Users/shawjes/Dropbox/EspinosaGroup/ANALYSIS/Celiac_MultiOmics/GRS/DSMIG_Shared/Manuscript_Figure1/Plots"
+dir.GRSoriginal.Anno <- "/Users/shawjes/Dropbox/EspinosaGroup/ANALYSIS/Celiac_MultiOmics/GRS/DSMIG_Shared/Manuscript_Figure1/Annotation/GRSoriginal"
+dir.GRSrevised.Anno <- "/Users/shawjes/Dropbox/EspinosaGroup/ANALYSIS/Celiac_MultiOmics/GRS/DSMIG_Shared/Manuscript_Figure1/Annotation/GRSrevised"
+```
+
+#### Print session info for reproducibility
+```{r}
+save.sessionInfo <- sessionInfo()
+
+save.sessionInfo
+```
+
+
+#### Define the directories used in this script
+```{r}
+dir.IlluminaProductFiles <- "/Users/shawjes/Dropbox/EspinosaGroup/DATA_MAIN/MEGA/chr21_genotyping/Illumina_ProductFiles"
+dir.chr21_genotyping <- "/Users/shawjes/Dropbox/EspinosaGroup/DATA_MAIN/MEGA/chr21_genotyping"
+dir.chr21_idatQuants <- "/Users/shawjes/Dropbox/EspinosaGroup/DATA_MAIN/MEGA/chr21_genotyping/idatQuants"
+dir.GRSdata <- "/Users/shawjes/Dropbox/EspinosaGroup/ANALYSIS/Celiac_MultiOmics/GRS/DSMIG_Shared/Manuscript_Figure1/Data"
+dir.GRSplots <- "/Users/shawjes/Dropbox/EspinosaGroup/ANALYSIS/Celiac_MultiOmics/GRS/DSMIG_Shared/Manuscript_Figure1/Plots"
+```
+
+#### Load MEGA to HTP ID key
+```{r}
+setwd(dir.GRSdata)
+MEGA.IDkey <- fread("MEGA_041822_MEGA2_to_HTP_ID_key_v0.1_JRS.csv")
+
+MEGA.IDkey
+```
+
+#### Load the relevant analysis metadata for this script
+```{r}
+setwd(dir.GRSdata)
+meta.MEGA.T21_visit1_Celiac <- fread("MEGA_041822_META_CeliacGRS_v0.1_JRS.csv") %>%
+  select(FamilyID, RecordID, MEGA.FID, MEGA.IID, MEGA.LabID, EXCLUDE_from_analysis, EXCLUDE_reason, Karyotype, Celiac)
+
+meta.MEGA.T21_visit1_Celiac
+```
+
+#### Read in Sharp et al., 2019 supplemental Tables 2 and 3, and the annotation file for revised GRS
+```{r}
+setwd(dir.GRSoriginal.Anno)
+sharpS2 <- read.xlsx("apt15826-sup-0001-supinfo.xlsx", sheet = "Table S2", startRow = 3)
+sharpS2
+
+setwd(dir.GRSoriginal.Anno)
+sharpS3 <- read.xlsx("apt15826-sup-0001-supinfo.xlsx", sheet = "Table S3", startRow = 3)
+sharpS3
+
+setwd(dir.GRSrevised.Anno)
+anno.revisedGRS <- read.xlsx("CD_GRS42_1000G_nopalin_pos_hg19.xlsx")
+anno.revisedGRS
+
+setwd(dir.GRSrevised.Anno)
+scorefile.HLADQ.revisedGRS <- fread("scorefile.txt")
+scorefile.HLADQ.revisedGRS
+```
+
+#### For each version of the GRS, prepare a dataframe of the SNP effect alleles and weights
+
+##### For the original GRS (Sharp et al., 2019)
+```{r}
+weights.HLADQ.originalGRS <- sharpS2 %>% 
+  select(`HLA-DQ.Genotype`, `Weight.(β)`) %>%
+  rename(Variant = `HLA-DQ.Genotype`,
+         `Score_Weight (logOR)` = `Weight.(β)`) %>%
+  filter(Variant != "* Frequency in case-control data as called by SNP strategy (Table 1)" &
+           Variant != "Table 1: HLA-DQ genotypes included in the CD-GRS by odds ratio") %>%
+  unique()
+
+weights.nonHLADQ.originalGRS <- sharpS3 %>%
+  rename(`Putative Gene (Sharp 2019)` = Putative.Gene,
+         Variant = SNP, Score_Allele = Allele, `Score_Weight (logOR)` = `Weight.(β)`) %>%
+  select(-OR) %>%
+  select(`Putative Gene (Sharp 2019)`, Variant, Score_Allele, `Score_Weight (logOR)`) %>%
+  unique()
+
+weights.originalGRS <- weights.HLADQ.originalGRS %>%
+  mutate(Score_Allele = NA,
+         `Putative Gene (Sharp 2019)` = NA) %>%
+  select(colnames(weights.nonHLADQ.originalGRS)) %>%
+  rbind(., weights.nonHLADQ.originalGRS) %>%
+  unique() %>%
+  arrange(`Score_Weight (logOR)`) %>%
+  mutate(GRS_version = "Sharp et al., 2019") %>%
+  select(GRS_version, everything()) %>%
+  unique()
+
+weights.HLADQ.originalGRS
+weights.nonHLADQ.originalGRS
+weights.originalGRS
+```
+
+##### For the revised GRS
+```{r}
+weights.HLADQ.revisedGRS <- scorefile.HLADQ.revisedGRS %>%
+  rename(Heterodimer1 = ALLELE1,
+         Heterodimer2 = ALLELE2,
+         Weight = BETA) %>%
+  mutate(Heterodimer1 = gsub("25", "2.5", Heterodimer1),
+         Heterodimer1 = gsub("22", "2.2", Heterodimer1),
+         Heterodimer1 = gsub("81", "8", Heterodimer1),
+         Heterodimer1 = gsub("7", "7.", Heterodimer1),
+         Heterodimer2 = gsub("25", "2.5", Heterodimer2),
+         Heterodimer2 = gsub("22", "2.2", Heterodimer2),
+         Heterodimer2 = gsub("81", "8", Heterodimer2),
+         Heterodimer2 = gsub("7", "7.", Heterodimer2)) %>%
+  mutate(Variant = paste(Heterodimer1, Heterodimer2, sep = "/")) %>%
+  rename(`Score_Weight (logOR)` = Weight) %>%
+  select(Variant, `Score_Weight (logOR)`) %>% 
+  rbind(.,
+        data.frame(cbind("X/X", "0")) %>%
+          `colnames<-`(c("Variant", "Score_Weight (logOR)"))) %>%
+  unique()
+
+weights.nonHLADQ.revisedGRS <- anno.revisedGRS %>%
+  select(RSID, A1, A2, STRAND, SCORE_ALLELE, SCORE) %>%
+  rename(Variant = RSID, Strand = STRAND, Score_Allele = SCORE_ALLELE, `Score_Weight (logOR)` = SCORE) %>%
+  filter(!is.na(`Score_Weight (logOR)`)) %>%
+  unique() %>%
+  select(Variant, Score_Allele, `Score_Weight (logOR)`) %>%
+  left_join(weights.nonHLADQ.originalGRS %>% select(Variant, `Putative Gene (Sharp 2019)`),
+            by = "Variant") %>%
+  select(`Putative Gene (Sharp 2019)`, Variant, Score_Allele, `Score_Weight (logOR)`) %>%
+  full_join(anno.revisedGRS %>%
+              filter(!is.na(REPLACING)) %>%
+              select(RSID, REPLACING) %>%
+              left_join(sharpS3 %>% select(Putative.Gene, SNP),
+                        by = c("REPLACING" = "SNP")) %>%
+              filter(!is.na(Putative.Gene)) %>%
+              rename(Variant = RSID),
+            by = "Variant") %>%
+  mutate(`Putative Gene (Sharp 2019)` = ifelse(grepl("rs", Variant)==TRUE &
+                                                 is.na(`Putative Gene (Sharp 2019)`),
+                                               Putative.Gene,
+                                               `Putative Gene (Sharp 2019)`)) %>%
+  select(-c(REPLACING, Putative.Gene)) %>%
+  unique()
+
+weights.revisedGRS <- weights.HLADQ.revisedGRS %>%
+  mutate(`Putative Gene (Sharp 2019)` = NA,
+         Score_Allele = NA) %>%
+  select(colnames(weights.nonHLADQ.revisedGRS)) %>%
+  rbind(., weights.nonHLADQ.revisedGRS) %>%
+  unique() %>%
+  arrange(`Score_Weight (logOR)`) %>%
+  mutate(GRS_version = "Sharp et al., 2022") %>%
+  select(GRS_version, everything()) %>%
+  select(colnames(weights.originalGRS)) %>%
+  unique()
+
+weights.HLADQ.revisedGRS
+weights.nonHLADQ.revisedGRS
+weights.revisedGRS
+```
+
+#### Revise the prepared dataframes to show "HLA-DQA1/HLA-DQB1" for the Putative Gene for the HLA-DQ genotypes, add a column for GRS component (HLA-DQ or non-HLA-DQ), and add a column for reference information to the 2019 GRS publication/2022 github
+```{r}
+weights.originalGRS01 <- weights.originalGRS %>%
+  mutate(`Putative Gene (Sharp 2019)` = ifelse(grepl("rs", Variant)==FALSE, "HLA-DQA1/HLA-DQB1",
+                                               `Putative Gene (Sharp 2019)`),
+         GRS_component = ifelse(`Putative Gene (Sharp 2019)` == "HLA-DQA1/HLA-DQB1",
+                                "HLA-DQ", "Non-HLA-DQ")) %>%
+  mutate(GRS_reference = "PMID: 32790217 DOI: 10.1111/apt.15826") %>%
+  select(GRS_version, GRS_reference, GRS_component, everything()) %>%
+  unique()
+
+weights.revisedGRS01 <- weights.revisedGRS %>%
+  mutate(`Putative Gene (Sharp 2019)` = ifelse(grepl("rs", Variant)==FALSE, "HLA-DQA1/HLA-DQB1",
+                                               `Putative Gene (Sharp 2019)`),
+         GRS_component = ifelse(`Putative Gene (Sharp 2019)` == "HLA-DQA1/HLA-DQB1",
+                                "HLA-DQ", "Non-HLA-DQ")) %>%
+  mutate(GRS_reference = "https://github.com/sethsh7/hla-prs-toolkit") %>%
+  select(GRS_version, GRS_reference, GRS_component, everything()) %>%
+  unique()
+
+weights.originalGRS01
+weights.revisedGRS01
+```
+
+#### Output the data of GRS alleles and weights to CSV and TSV
+```{r}
+setwd(dir.GRSdata)
+fwrite(weights.originalGRS01, "MEGA_041822_Sharp2019_rsID_GRSweight_PutativeGene_v0.1_JRS.csv")
+fwrite(weights.originalGRS01, "MEGA_041822_Sharp2019_rsID_GRSweight_PutativeGene_v0.1_JRS.tsv", sep = "\t")
+
+setwd(dir.GRSdata)
+fwrite(weights.revisedGRS01, "MEGA_041822_Sharp2022_rsID_GRSweight_PutativeGeneSharp2019_v0.1_JRS.csv")
+fwrite(weights.revisedGRS01, "MEGA_041822_Sharp2022_rsID_GRSweight_PutativeGeneSharp2019_v0.1_JRS.tsv", sep = "\t")
+```
+
+#### Load the prepared HLA-DQ genotype data
+```{r}
+setwd(dir.GRSdata)
+HLA_DQ_Genotypes <- fread("HLA_041822_HLA_Genotype_Dosage_LONG_v0.1_JRS.csv") %>%
+  rename(Variant = HLA_DQ_Genotype)
+
+HLA_DQ_Genotypes
+```
+
+#### Read in the prepared datasets of SNP dosage values for the originally-published GRS (2019) and the revised GRS (2022) that replaces palindromic SNPs
+#### Add the GRS alleles and weights
+```{r}
+setwd(dir.GRSdata)
+dosageData.nonHLADQ.GRSorig <- fread("MEGA_041822_Dosage_GRS2019_ImputedRef1000G3v5_excludingChr21snp_0.1_JRS.csv")
+
+setwd(dir.GRSdata)
+dosageData.nonHLADQ.GRSrevised <- fread("MEGA_041822_Dosage_GRS2022_ImputedRef1000G3v5_excludingChr21snp_0.1_JRS.csv")
+  
+dosageData.nonHLADQ.GRSorig %>% dim()
+dosageData.nonHLADQ.GRSrevised %>% dim()
+
+dosageData.nonHLADQ.GRSorig %>% unique() %>% dim()
+dosageData.nonHLADQ.GRSrevised %>% unique() %>% dim()
+
+
+setwd(dir.GRSdata)
+dosageData.nonHLADQ.GRSorig <- fread("MEGA_041822_Dosage_GRS2019_ImputedRef1000G3v5_excludingChr21snp_0.1_JRS.csv") %>%
+  rename(Variant = GRS_rsID,
+         REF.FWD = REF,
+         ALT.FWD = ALT) %>%
+  filter(Variant %in% weights.nonHLADQ.originalGRS$Variant & Variant != "rs1893592") %>%
+  select(FamilyID, RecordID, MEGA.FID, MEGA.IID, MEGA.LabID, Variant, COUNTED, Dosage.COUNTED, VCF_VariantID, REF.FWD, ALT.FWD) %>%
+  left_join(weights.nonHLADQ.originalGRS, by = "Variant")
+
+setwd(dir.GRSdata)
+dosageData.nonHLADQ.GRSrevised <- fread("MEGA_041822_Dosage_GRS2022_ImputedRef1000G3v5_excludingChr21snp_0.1_JRS.csv") %>%
+  rename(Variant = GRS_rsID,
+         REF.FWD = REF,
+         ALT.FWD = ALT) %>%
+  filter(Variant %in% weights.nonHLADQ.revisedGRS$Variant & Variant != "rs1893592") %>%
+  select(FamilyID, RecordID, MEGA.FID, MEGA.IID, MEGA.LabID, Variant, COUNTED, Dosage.COUNTED, VCF_VariantID, REF.FWD, ALT.FWD) %>%
+  left_join(weights.nonHLADQ.revisedGRS, by = "Variant")
+
+dosageData.nonHLADQ.GRSorig
+dosageData.nonHLADQ.GRSrevised
+```
+
+#### Verify that three SNPs are different between GRSorig and GRSrevised
+```{r}
+`%notin%` <- Negate(`%in%`)
+dosageData.nonHLADQ.GRSorig %>% select(Variant) %>% unique() %>% filter(Variant %notin% dosageData.nonHLADQ.GRSrevised$Variant)
+```
+
+#### Verify that the allele under 'COUNTED' is always the REF allele in FWD strand orientation
+```{r}
+dosageData.nonHLADQ.GRSorig %>% filter(COUNTED != REF.FWD) %>% nrow()
+dosageData.nonHLADQ.GRSrevised %>% filter(COUNTED != REF.FWD) %>% nrow()
+print("Confirmed - The allele under 'COUNTED' is always the REF allele in FWD strand orientation")
+```
+
+#### Determine the dosage of the GRS allele for each non-HLA-DQ SNP
+
+##### GRS 2019
+```{r}
+dosageData.nonHLADQ.GRSorig01 <- dosageData.nonHLADQ.GRSorig %>%
+  select(-c(COUNTED)) %>%
+  rename(Dosage.REF.FWD = Dosage.COUNTED) %>%
+  mutate(Dosage.ALT.FWD = 2 - Dosage.REF.FWD,
+         Dosage.REF.REV = Dosage.REF.FWD,
+         Dosage.ALT.REV = Dosage.ALT.FWD,
+         REF.REV = ifelse(REF.FWD == "A", "T",
+                          ifelse(REF.FWD == "T", "A", 
+                                 ifelse(REF.FWD == "G", "C",
+                                        ifelse(REF.FWD == "C", "G", NA)))),
+         ALT.REV = ifelse(ALT.FWD == "A", "T",
+                          ifelse(ALT.FWD == "T", "A", 
+                                 ifelse(ALT.FWD == "G", "C",
+                                        ifelse(ALT.FWD == "C", "G", NA))))) %>%
+  mutate(Dosage_for_GRS = ifelse(Score_Allele == REF.FWD, Dosage.REF.FWD,
+                                 ifelse(Score_Allele == ALT.FWD, Dosage.ALT.FWD,
+                                        ifelse(Score_Allele == REF.REV, Dosage.REF.REV,
+                                               ifelse(Score_Allele == ALT.REV, Dosage.ALT.REV, NA)))))
+
+# Verify that all IIDs have a value for Dosage_for_GRS for every SNP:
+dosageData.nonHLADQ.GRSorig01 %>% filter(is.na(Dosage_for_GRS)) %>% nrow()
+
+# Verify that # unique IIDs x # unique Variants = # rows in the prepared dataframe:
+identical((dosageData.nonHLADQ.GRSorig01$MEGA.IID %>% unique() %>% length())*(dosageData.nonHLADQ.GRSorig01$Variant %>% unique() %>% length()),
+          nrow(dosageData.nonHLADQ.GRSorig01))
+
+dosageData.nonHLADQ.GRSorig01
+```
+
+##### GRS 2022
+```{r}
+dosageData.nonHLADQ.GRSrevised01 <- dosageData.nonHLADQ.GRSrevised %>%
+  select(-c(COUNTED)) %>%
+  rename(Dosage.REF.FWD = Dosage.COUNTED) %>%
+  mutate(Dosage.ALT.FWD = 2 - Dosage.REF.FWD,
+         Dosage.REF.REV = Dosage.REF.FWD,
+         Dosage.ALT.REV = Dosage.ALT.FWD,
+         REF.REV = ifelse(REF.FWD == "A", "T",
+                          ifelse(REF.FWD == "T", "A", 
+                                 ifelse(REF.FWD == "G", "C",
+                                        ifelse(REF.FWD == "C", "G", NA)))),
+         ALT.REV = ifelse(ALT.FWD == "A", "T",
+                          ifelse(ALT.FWD == "T", "A", 
+                                 ifelse(ALT.FWD == "G", "C",
+                                        ifelse(ALT.FWD == "C", "G", NA))))) %>%
+  mutate(Dosage_for_GRS = ifelse(Score_Allele == REF.FWD, Dosage.REF.FWD,
+                                 ifelse(Score_Allele == ALT.FWD, Dosage.ALT.FWD,
+                                        ifelse(Score_Allele == REF.REV, Dosage.REF.REV,
+                                               ifelse(Score_Allele == ALT.REV, Dosage.ALT.REV, NA)))))
+
+# Verify that all IIDs have a value for Dosage_for_GRS for every SNP:
+dosageData.nonHLADQ.GRSrevised01 %>% filter(is.na(Dosage_for_GRS)) %>% nrow()
+
+# Verify that # unique IIDs x # unique Variants = # rows in the prepared dataframe:
+identical((dosageData.nonHLADQ.GRSrevised01$MEGA.IID %>% unique() %>% length())*(dosageData.nonHLADQ.GRSrevised01$Variant %>% unique() %>% length()),
+          nrow(dosageData.nonHLADQ.GRSrevised01))
+
+dosageData.nonHLADQ.GRSrevised01
+```
+
+#### Remove the D21s in the non-HLA-DQ SNP dosage data
+```{r}
+dosageData.nonHLADQ.GRSorig02 <- dosageData.nonHLADQ.GRSorig01 %>%
+  select(FamilyID, RecordID, MEGA.FID, MEGA.IID, MEGA.LabID, Variant, Score_Allele, Dosage_for_GRS,
+         `Putative Gene (Sharp 2019)`, `Score_Weight (logOR)`) %>%
+  filter(grepl("B", MEGA.LabID)==FALSE) %>%
+  select(FamilyID, RecordID, MEGA.FID, MEGA.IID, MEGA.LabID,
+         Variant, Score_Allele, Dosage_for_GRS, `Score_Weight (logOR)`, `Putative Gene (Sharp 2019)`) %>%
+  unique() %>%
+  arrange(`Putative Gene (Sharp 2019)`, MEGA.IID)
+
+dosageData.nonHLADQ.GRSrevised02 <- dosageData.nonHLADQ.GRSrevised01 %>%
+  select(FamilyID, RecordID, MEGA.FID, MEGA.IID, MEGA.LabID, Variant, Score_Allele, Dosage_for_GRS,
+         `Putative Gene (Sharp 2019)`, `Score_Weight (logOR)`) %>%
+  filter(grepl("B", MEGA.LabID)==FALSE) %>%
+  select(FamilyID, RecordID, MEGA.FID, MEGA.IID, MEGA.LabID,
+         Variant, Score_Allele, Dosage_for_GRS, `Score_Weight (logOR)`, `Putative Gene (Sharp 2019)`) %>%
+  unique() %>%
+  arrange(`Putative Gene (Sharp 2019)`, MEGA.IID)
+
+identical(dosageData.nonHLADQ.GRSorig02$`Putative Gene (Sharp 2019)`,
+          dosageData.nonHLADQ.GRSrevised02$`Putative Gene (Sharp 2019)`)
+#[1] TRUE
+# Good.
+identical(dosageData.nonHLADQ.GRSorig02$Dosage_for_GRS,
+          dosageData.nonHLADQ.GRSrevised02$Dosage_for_GRS)
+#[1] FALSE
+# Good.
+
+dosageData.nonHLADQ.GRSorig02
+dosageData.nonHLADQ.GRSrevised02
+```
+
+#### Read in manual genotypes for the UBASH3A SNP located on chr21
+```{r}
+setwd(dir.GRSdata)
+dosageData.rs1893592 <- fread("MEGA_041822_chr21_UBASH3A_rs1893592_Manual_Genotypes_v0.1_JRS.csv") %>%
+  select(MEGA.IID, MEGA.LabID, SNP, Genotype) %>%
+  unique() %>%
+  rename(Variant = SNP) %>%
+  left_join(weights.nonHLADQ.originalGRS %>% filter(Variant == "rs1893592")) %>%
+  mutate(Dosage_for_GRS = ifelse(Genotype == "AAA", 0,
+                                 ifelse(Genotype == "AAC", 1,
+                                        ifelse(Genotype == "ACC", 2,
+                                               ifelse(Genotype == "CCC", 3, NA))))) %>%
+  full_join(meta.MEGA.T21_visit1_Celiac %>% select(FamilyID, RecordID, MEGA.FID, MEGA.IID, MEGA.LabID) %>% unique(),
+            by = c("MEGA.IID", "MEGA.LabID")) %>%
+  select(FamilyID, RecordID, MEGA.FID, MEGA.IID, MEGA.LabID,
+         Variant, Score_Allele, Dosage_for_GRS, `Score_Weight (logOR)`, `Putative Gene (Sharp 2019)`) %>%
+  filter(grepl("B", MEGA.LabID)==FALSE) %>% # Keep only T21s and participants represented in the non-HLA-DQ SNP dosage dataframes
+  filter(MEGA.IID %in% dosageData.nonHLADQ.GRSorig02$MEGA.IID | MEGA.IID %in% dosageData.nonHLADQ.GRSrevised02$MEGA.IID)
+
+dosageData.rs1893592
+```
+
+#### Combine the dosage data from non-chr21 non-HLA-DQ SNPs with the dosage data for the chr21 SNP
+```{r}
+dosageData.nonHLADQ.GRSorig03 <- rbind(dosageData.rs1893592,
+                                       dosageData.nonHLADQ.GRSorig02) %>%
+  arrange(`Putative Gene (Sharp 2019)`, MEGA.IID)
+
+dosageData.nonHLADQ.GRSrevised03 <- rbind(dosageData.rs1893592,
+                                          dosageData.nonHLADQ.GRSrevised02) %>%
+  unique() %>%
+  arrange(`Putative Gene (Sharp 2019)`, MEGA.IID)
+
+identical((dosageData.nonHLADQ.GRSorig02 %>%
+             arrange(`Putative Gene (Sharp 2019)`, MEGA.IID))$`Putative Gene (Sharp 2019)`,
+          (dosageData.nonHLADQ.GRSrevised02 %>%
+              arrange(`Putative Gene (Sharp 2019)`, MEGA.IID))$`Putative Gene (Sharp 2019)`)
+#[1] TRUE
+# Good.
+
+identical((dosageData.nonHLADQ.GRSorig02 %>%
+             arrange(`Putative Gene (Sharp 2019)`, MEGA.IID))$Dosage_for_GRS,
+          (dosageData.nonHLADQ.GRSrevised02 %>%
+              arrange(`Putative Gene (Sharp 2019)`, MEGA.IID))$Dosage_for_GRS)
+#[1] FALSE
+# Good (we wouldn't expect the dosage columns to be identical because different SNPs are used in each version of this dataset.)
+
+identical((dosageData.nonHLADQ.GRSorig03 %>%
+             arrange(`Putative Gene (Sharp 2019)`, MEGA.IID))$Dosage_for_GRS,
+          (dosageData.nonHLADQ.GRSrevised03 %>%
+              arrange(`Putative Gene (Sharp 2019)`, MEGA.IID))$Dosage_for_GRS)
+#[1] FALSE
+# Good (we wouldn't expect the dosage columns to be identical because different SNPs are used in each version of this dataset.)
+
+# Check for missing Dosage values:
+dosageData.nonHLADQ.GRSorig03 %>% filter(is.na(Dosage_for_GRS)) %>% nrow()
+dosageData.nonHLADQ.GRSrevised03 %>% filter(is.na(Dosage_for_GRS)) %>% nrow()
+# Good, each dataframe has 0 rows with NA for Dosage_for_GRS.
+
+dosageData.nonHLADQ.GRSorig03
+dosageData.nonHLADQ.GRSrevised03
+```
+
+#### Combine the non-HLA-DQ SNP dosage data with HLA-DQ genotype dosage data
+#### Calculate Weight x Dosage for each genetic predictor
+```{r}
+analysisData.GRSorig <- HLA_DQ_Genotypes %>%
+  rename(Dosage_for_GRS = Dosage) %>%
+  mutate(Score_Allele = NA) %>%
+  select(FamilyID, RecordID, MEGA.FID, MEGA.IID, MEGA.LabID, Variant, Score_Allele, Dosage_for_GRS, everything()) %>%
+  left_join(weights.HLADQ.originalGRS, by = "Variant") %>%
+  mutate(`Putative Gene (Sharp 2019)` = "HLA-DQA1/HLA-DQB1") %>%
+  rbind(., dosageData.nonHLADQ.GRSorig03) %>%
+  mutate(`Weight x Dosage` = `Score_Weight (logOR)`*Dosage_for_GRS) %>%
+  unique() %>%
+  group_by(MEGA.IID) %>%
+  mutate(GRS = sum(`Weight x Dosage`)) %>%
+  ungroup() %>%
+  arrange(`Putative Gene (Sharp 2019)`, MEGA.IID) %>%
+  filter(grepl("B", MEGA.LabID)==FALSE)
+
+analysisData.GRSrevised <- HLA_DQ_Genotypes %>%
+  rename(Dosage_for_GRS = Dosage) %>%
+  mutate(Score_Allele = NA) %>%
+  select(FamilyID, RecordID, MEGA.FID, MEGA.IID, MEGA.LabID, Variant, Score_Allele, Dosage_for_GRS, everything()) %>%
+  left_join(weights.HLADQ.revisedGRS, by = "Variant") %>%
+  mutate(`Putative Gene (Sharp 2019)` = "HLA-DQA1/HLA-DQB1") %>%
+  rbind(., dosageData.nonHLADQ.GRSrevised03) %>%
+  mutate(`Score_Weight (logOR)` = as.numeric(`Score_Weight (logOR)`),
+         `Weight x Dosage` = `Score_Weight (logOR)`*Dosage_for_GRS) %>%
+  unique() %>%
+  group_by(MEGA.IID) %>%
+  mutate(GRS = sum(`Weight x Dosage`)) %>%
+  ungroup() %>%
+  arrange(`Putative Gene (Sharp 2019)`, MEGA.IID) %>%
+  filter(grepl("B", MEGA.LabID)==FALSE)
+
+identical(analysisData.GRSorig$`Putative Gene (Sharp 2019)`,
+          analysisData.GRSrevised$`Putative Gene (Sharp 2019)`)
+# [1] TRUE
+# Good.
+
+identical(analysisData.GRSorig$`Weight x Dosage`,
+          analysisData.GRSrevised$`Weight x Dosage`)
+# [1] FALSE
+# Good. Weights are the same in GRS 2019 and GRS 2022, but the Dosage_for_GRS differs, so we expect that `Weight x Dosage` will  have different values in each version of the dataset.
+
+analysisData.GRSorig
+analysisData.GRSrevised
+```
+
+#### Check that the number of rows in each dataframe still makes sense
+```{r}
+nrow(analysisData.GRSorig)
+nrow(analysisData.GRSrevised)
+
+N_Variants.GRSorig <- unique(analysisData.GRSorig$Variant) %>% length()
+N_Variants.GRSrevised <- unique(analysisData.GRSrevised$Variant) %>% length()
+
+N_IIDs.GRSorig <- unique(analysisData.GRSorig$MEGA.IID) %>% length()
+N_IIDs.GRSrevised <- unique(analysisData.GRSrevised$MEGA.IID) %>% length()
+
+identical(N_Variants.GRSorig*N_IIDs.GRSorig,
+          nrow(analysisData.GRSorig))
+
+identical(N_Variants.GRSrevised*N_IIDs.GRSrevised,
+          nrow(analysisData.GRSrevised))
+```
+
+#### Read in the imputation QC info
+```{r}
+setwd(dir.GRSoriginal.Anno)
+imputationQCinfo.GRSorig <- fread("MEGA_041822_CD_GRS_Sharp2019_ImputationQCinfo_GRCh37_v0.1_JRS.csv") %>%
+  rename(`Variant (Sharp 2019)` = GRS_rsID) %>%
+  select(`Variant (Sharp 2019)`, CHR, POS, REF, ALT,
+         AF, MAF, R2, ER2) %>%
+  rename(MIS_VCF_INFO.AF = AF,
+         MIS_VCF_INFO.MAF = MAF,
+         MIS_VCF_INFO.R2 = R2,
+         MIS_VCF_INFO.ER2 = ER2,
+         CHR.GRCh37 = CHR,
+         POS.GRCh37 = POS,
+         REF.FWD = REF,
+         ALT.FWD = ALT)
+
+setwd(dir.GRSrevised.Anno)
+imputationQCinfo.GRSrevised <- fread("MEGA_041822_CD_GRS_Sharp2022_ImputationQCinfo_GRCh37_v0.1_JRS.csv") %>%
+  rename(`Variant (Sharp 2022)` = GRS_rsID) %>%
+  select(`Variant (Sharp 2022)`, CHR, POS, REF, ALT,
+         AF, MAF, R2, ER2) %>%
+  rename(MIS_VCF_INFO.AF = AF,
+         MIS_VCF_INFO.MAF = MAF,
+         MIS_VCF_INFO.R2 = R2,
+         MIS_VCF_INFO.ER2 = ER2,
+         CHR.GRCh37 = CHR,
+         POS.GRCh37 = POS,
+         REF.FWD = REF,
+         ALT.FWD = ALT)
+
+imputationQCinfo.GRSorig
+imputationQCinfo.GRSrevised
+```
+
+#### Add imputation QC metrics to the analysis dataframes
+```{r}
+analysisData.GRSorig01 <- analysisData.GRSorig %>%
+  rename(`Variant (Sharp 2019)`= Variant) %>%
+  left_join(imputationQCinfo.GRSorig, by = "Variant (Sharp 2019)") %>%
+  mutate(GRS_version = "Sharp et al., 2019",
+         GRS_reference = "PMID: 32790217 DOI: 10.1111/apt.15826") %>%
+  select(GRS_version, GRS_reference, everything()) %>%
+  unique()
+
+analysisData.GRSrevised01 <- analysisData.GRSrevised %>%
+  rename(`Variant (Sharp 2022)`= Variant) %>%
+  left_join(imputationQCinfo.GRSrevised, by = "Variant (Sharp 2022)") %>%
+  mutate(GRS_version = "Sharp et al., 2022",
+         GRS_reference = "https://github.com/sethsh7/hla-prs-toolkit") %>%
+  select(GRS_version, GRS_reference, everything()) %>%
+  unique()
+
+analysisData.GRSorig01 %>% tail(n = 100)
+analysisData.GRSrevised01 %>% tail(n = 100)
+
+analysisData.GRSorig01 %>% dim()
+analysisData.GRSrevised01 %>% dim()
+```
+
+#### Check again that the number of rows in each dataframe still makes sense
+```{r}
+N_Variants.GRSorig <- unique(analysisData.GRSorig01$`Variant (Sharp 2019)`) %>% length()
+N_Variants.GRSrevised <- unique(analysisData.GRSrevised01$`Variant (Sharp 2022)`) %>% length()
+
+N_IIDs.GRSorig <- unique(analysisData.GRSorig01$MEGA.IID) %>% length()
+N_IIDs.GRSrevised <- unique(analysisData.GRSrevised01$MEGA.IID) %>% length()
+
+identical(N_Variants.GRSorig*N_IIDs.GRSorig,
+          nrow(analysisData.GRSorig01))
+
+identical(N_Variants.GRSrevised*N_IIDs.GRSrevised,
+          nrow(analysisData.GRSrevised01))
+```
+
+#### And one more time, check that no one has any NAs for Dosage_for_GRS or GRS columns
+```{r}
+analysisData.GRSorig01 %>% filter(is.na(Dosage_for_GRS) | is.na(GRS))
+analysisData.GRSrevised01 %>% filter(is.na(Dosage_for_GRS) | is.na(GRS))
+# Great.
+```
+
+```{r}
+setwd(dir.GRSdata)
+analysisData.GRSorig01 <- fread("MEGA_041822_AnalysisData_CDGRS_Sharp2019_v0.1_JRS.csv")
+
+setwd(dir.GRSdata)
+analysisData.GRSrevised01 <- fread("MEGA_041822_AnalysisData_CDGRS_Sharp2022_v0.1_JRS.csv")
+
+setwd(dir.GRSdata)
+MEGA.IDkey <- fread("MEGA_041822_MEGA2_to_HTP_ID_key_v0.1_JRS.csv") %>%
+  filter(HTP_participant == "Yes")
+
+MEGA.IDkey
+
+analysisData.GRSorig02 <- analysisData.GRSorig01 %>%
+  unique() %>%
+  left_join(MEGA.IDkey, by = c("MEGA.IID", "MEGA.LabID")) %>%
+  mutate(RecordID = ifelse((is.na(RecordID.x) | RecordID.x == "") & !is.na(RecordID.y), RecordID.y, RecordID.x),
+         FamilyID = ifelse((is.na(FamilyID.x) | FamilyID.x == "") & !is.na(FamilyID.y), FamilyID.y, FamilyID.x),
+         MEGA.FID = ifelse((is.na(MEGA.FID.x) | MEGA.FID.x == "") & !is.na(MEGA.FID.y), MEGA.FID.y, MEGA.FID.x)) %>%
+  select(colnames(analysisData.GRSorig01)) %>%
+  unique()
+
+analysisData.GRSrevised02 <- analysisData.GRSrevised01 %>%
+  unique() %>%
+  left_join(MEGA.IDkey, by = c("MEGA.IID", "MEGA.LabID")) %>%
+  mutate(RecordID = ifelse((is.na(RecordID.x) | RecordID.x == "") & !is.na(RecordID.y), RecordID.y, RecordID.x),
+         FamilyID = ifelse((is.na(FamilyID.x) | FamilyID.x == "") & !is.na(FamilyID.y), FamilyID.y, FamilyID.x),
+         MEGA.FID = ifelse((is.na(MEGA.FID.x) | MEGA.FID.x == "") & !is.na(MEGA.FID.y), MEGA.FID.y, MEGA.FID.x)) %>%
+  select(colnames(analysisData.GRSrevised01)) %>%
+  unique()
+
+analysisData.GRSorig02 %>%
+  select(RecordID, MEGA.IID) %>%
+  unique() %>%
+  group_by(RecordID) %>%
+  summarise(IIDs_per_RecordID = n()) %>%
+  arrange(desc(IIDs_per_RecordID))
+
+analysisData.GRSrevised02 %>%
+  select(RecordID, MEGA.IID) %>%
+  unique() %>%
+  group_by(RecordID) %>%
+  summarise(IIDs_per_RecordID = n()) %>%
+  arrange(desc(IIDs_per_RecordID))
+```
+
+#### Save each version of the analysis dataset to a CSV and TSV
+```{r}
+setwd(dir.GRSdata)
+fwrite(analysisData.GRSorig02, "MEGA_041822_AnalysisData_CDGRS_Sharp2019_v0.1_JRS.csv")
+fwrite(analysisData.GRSorig02, "MEGA_041822_AnalysisData_CDGRS_Sharp2019_v0.1_JRS.tsv", sep = "\t")
+
+setwd(dir.GRSdata)
+fwrite(analysisData.GRSrevised02, "MEGA_041822_AnalysisData_CDGRS_Sharp2022_v0.1_JRS.csv")
+fwrite(analysisData.GRSrevised02, "MEGA_041822_AnalysisData_CDGRS_Sharp2022_v0.1_JRS.tsv", sep = "\t")
+```
+
+
+
+```{r}
+imputed.traw.GRSorig03 %>%
+  select(RecordID, MEGA.IID) %>%
+  unique() %>%
+  group_by(RecordID) %>%
+  summarise(IIDs_per_RecordID = n()) %>%
+  arrange(desc(IIDs_per_RecordID))
+```
+

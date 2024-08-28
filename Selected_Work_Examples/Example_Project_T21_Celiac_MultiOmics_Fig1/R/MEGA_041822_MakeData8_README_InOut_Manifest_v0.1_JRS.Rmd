@@ -1,0 +1,88 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+#### Load frequently used packages
+```{r}
+library(skimr)
+library(openxlsx)
+library(ggrepel)
+library(dplyr)
+library(tidyr)
+library(data.table)
+library(broom)
+library(broomExtra)
+library(tibble)
+library(sjstats)
+library(car)
+library(lme4)
+library(lmerTest)
+library(ggplot2)
+library(tibble)
+library(modelr)
+library(tidyverse)
+#library(miceadds)
+library(ggforce)
+require(openxlsx)
+library(tidyverse)
+library(caret)
+library(glmnet)
+library(ggplot2)
+library(gridExtra)
+library(MASS) # rlm
+library(lmPerm)
+library(circlize)
+library(RColorBrewer)
+library(ComplexHeatmap)
+
+select <- dplyr::select
+filter <- dplyr::filter
+```
+
+#### Create a README folder to contain documentation
+```{bash}
+mkdir '/Users/shawjes/Dropbox/EspinosaGroup/ANALYSIS/Celiac_MultiOmics/GRS/DSMIG_Shared/Manuscript_Figure1/README'
+```
+
+#### Define in/out directories
+```{r}
+dir.readme <- '/Users/shawjes/Dropbox/EspinosaGroup/ANALYSIS/Celiac_MultiOmics/GRS/DSMIG_Shared/Manuscript_Figure1/README'
+
+dir <- "/Users/shawjes/Dropbox/EspinosaGroup/ANALYSIS/Celiac_MultiOmics/GRS/DSMIG_Shared/Manuscript_Figure1"
+
+subdir.list <- list.files(dir)[list.files(dir)!="README"]
+
+dir
+subdir.list
+```
+
+#### Prepare a template for documentation describing each input and output file in the Figure 1 pipeline
+```{r}
+out.list <- list()
+for ( i in 1:length(subdir.list) ){
+  out.list[[i]] <- list.files(paste(dir, "/", subdir.list[[i]], sep = "")) %>%
+    as.data.frame() %>%
+    `colnames<-`("Filename") %>%
+    mutate(Directory = paste(dir, "/", subdir.list[[i]], sep = "")) %>%
+    mutate(Directory = paste("'", Directory, "'", sep = "")) %>%
+    mutate(OneDrive_Directory = gsub("[/]Users[/]shawjes[/]Dropbox[/]EspinosaGroup[/]ANALYSIS[/]Celiac_MultiOmics[/]GRS[/]DSMIG_Shared[/]Manuscript_Figure1[/]",
+    "{your_OneDrive_pathname}/HTP - Celiac Disease/Documents/General/analysis/Figure1/",
+    Directory)) %>%
+    select(Directory, OneDrive_Directory, Filename) %>%
+    arrange(Filename) %>%
+    mutate(Description = "")
+}
+
+names(out.list) <- subdir.list
+
+out.list
+```
+
+#### Output the template to an Excel workbook and then add descriptions of each file manually
+```{r}
+setwd(dir.readme)
+write.xlsx(out.list,
+           "MEGA_041822_README_CeliacGRS_Fig1_InOut_Manifest_v0.1_JRS.xlsx")
+```
+

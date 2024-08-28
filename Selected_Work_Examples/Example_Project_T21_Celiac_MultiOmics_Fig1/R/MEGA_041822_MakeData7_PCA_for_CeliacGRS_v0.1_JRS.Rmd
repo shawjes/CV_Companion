@@ -1,0 +1,909 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+library(skimr)
+library(openxlsx)
+library(ggrepel)
+library(dplyr)
+library(tidyr)
+library(data.table)
+library(broom)
+library(broomExtra)
+library(tibble)
+library(sjstats)
+library(car)
+library(lme4)
+library(lmerTest)
+library(ggplot2)
+library(tibble)
+library(modelr)
+library(tidyverse)
+#library(miceadds)
+library(ggforce)
+require(openxlsx)
+library(tidyverse)
+library(caret)
+library(glmnet)
+library(ggplot2)
+library(gridExtra)
+library(MASS) # rlm
+library(lmPerm)
+library(circlize)
+library(RColorBrewer)
+library(ComplexHeatmap)
+
+select <- dplyr::select
+filter <- dplyr::filter
+```
+
+#### Define in/out directory
+```{r}
+dir <- '/Users/shawjes/Dropbox/EspinosaGroup/ANALYSIS/Celiac_MultiOmics/GRS/DSMIG_Shared/Manuscript_Figure1/Data'
+dir.PCA <- '/Users/shawjes/Dropbox/EspinosaGroup/ANALYSIS/Celiac_MultiOmics/GRS/DSMIG_Shared/Manuscript_Figure1/Data/PCA'
+
+setwd(dir.PCA)
+```
+
+#### Print and save session info for record of package versions, etc.
+```{r}
+save.sessionInfo <- sessionInfo()
+
+setwd(dir.PCA)
+saveRDS(save.sessionInfo, "MEGA_041822_sessionInfo_MakeData7_PCA_for_CeliacGRS_v0.1_JRS.rds")
+```
+
+#### Load MEGA to HTP ID key
+```{r}
+setwd(dir)
+MEGA.IDkey <- fread("MEGA_041822_MEGA2_to_HTP_ID_key_v0.1_JRS.csv")
+
+MEGA.IDkey
+```
+
+#### Read in the Plink *.bim file for reference below
+```{r}
+setwd(dir)
+MEGA.bim <- fread("Espinosa_MEGA2_HTP_GS_08132019_updated_callrate_passing_QC.bim") %>%
+  `colnames<-`(c("CHR", "VariantID", "cM", "BP", "A1", "A2")) %>%
+  select(VariantID, CHR, BP, A1, A2) %>%
+  arrange(VariantID)
+
+MEGA.bim
+```
+
+#### Note the file for use with Plink --keep
+```{r}
+'/Users/shawjes/Dropbox/EspinosaGroup/ANALYSIS/Celiac_MultiOmics/GRS/DSMIG_Shared/Manuscript/Data/MEGA_041822_CeliacGRS_IDS_FOR_ANALYSIS_v0.1_JRS.txt'
+```
+
+#### Read in the prepared dataset and retrieve the MEGA variant IDs for the non-HLA-DQ SNPs
+```{r}
+setwd(dir)
+mapping.origGRS <- fread("MEGA_041822_AnalysisData_CDGRS_Sharp2019_v0.1_JRS.csv") %>%
+  select(CHR.GRCh37, POS.GRCh37) %>%
+  unique() %>%
+  mutate(map = paste(CHR.GRCh37, POS.GRCh37, sep = "_"))
+
+setwd(dir)
+mapping.revisedGRS <- fread("MEGA_041822_AnalysisData_CDGRS_Sharp2022_v0.1_JRS.csv") %>%
+  select(CHR.GRCh37, POS.GRCh37) %>%
+  unique() %>%
+  mutate(map = paste(CHR.GRCh37, POS.GRCh37, sep = "_"))
+
+mapping.origGRS
+mapping.revisedGRS
+
+exclude_GRS_SNPs <- MEGA.bim %>%
+  mutate(map = paste(CHR, BP, sep = "_")) %>%
+  filter(map %in% mapping.origGRS$map |
+           map %in% mapping.revisedGRS$map) %>%
+  select(VariantID)
+
+exclude_GRS_SNPs
+```
+
+#### Make a file indicating which variants should be excluded for valid PCA analysis
+Krebs, Kristi, et al. “Genome-Wide Study Identifies Association between HLA-B∗55:01 and Self-Reported Penicillin Allergy.” American Journal of Human Genetics, vol. 107, no. 4, Oct. 2020, pp. 612–21. PubMed, https://doi.org/10.1016/j.ajhg.2020.08.008.
+  “Principle components for ancestry (PCs) were calculated using common variants (MAF > 0.01) with high variant call rate (> 98%), excluding variants in linkage and regions known to affect PCs (HLA region on chromosome 6, inversion on chromosome 8 (8135000-12000000) and inversion on chr 17 (40900000-45000000), GRCh37 build).” (Supplemental Data, page 26-27)
+
+Include:
+* Common variants (MAF > 0.01)
+* High variant call rate (> 98%)
+
+Exclude ancestry-specific regions that can confound PCA:
+* HLA region on chromosome 6
+* Inversion on chromosome 8 (8135000-12000000)
+* Inversion on chr 17 (40900000-45000000)
+
+Definition of MHC region on Build 37: https://www-ncbi-nlm-nih-gov.proxy.hsl.ucdenver.edu/grc/human/regions/MHC?asm=GRCh37
+We will exclude the entire MHC region +/- 200,000 bp on either side
+Range of human MHC region on Build 37: chr6:28477797-33448354
+Range to exclude: chr6:28277797-33648354
+
+#### Make a file for use below with Plink --exclude
+```{r}
+#https://www.cog-genomics.org/plink2/formats#bim
+# Chromosome code (either an integer, or 'X'/'Y'/'XY'/'MT'; '0' indicates unknown) or name
+# Variant identifier
+# Position in morgans or centimorgans (safe to use dummy value of '0')
+# Base-pair coordinate (1-based; limited to 231-2)
+# Allele 1 (corresponding to clear bits in .bed; usually minor)
+# Allele 2 (corresponding to set bits in .bed; usually major)
+
+# HLA region on chromosome 6 +/- 200kb (chr6:28277797-33648354)
+# This is the human MHC region chr6:28477797-33448354 +/- 200kb (200,000 bp) on either side.
+exclude_HLApm200kb <- MEGA.bim %>% filter(CHR == 6) %>% filter(BP>=28277797 & BP<=33648354) %>% select(VariantID)
+exclude_HLApm200kb
+
+# Inversion on chromosome 8 (8135000-12000000) (as in Krebs et al., 2020)
+exclude_8p23.1 <- MEGA.bim %>% filter(CHR == 8) %>% filter(BP>=8135000 & BP<=12000000) %>% select(VariantID)
+exclude_8p23.1
+
+# Inversion on chr 17 (40900000-45000000) (as in Krebs et al., 2020)
+exclude_17q21.31 <- MEGA.bim %>% filter(CHR == 17) %>% filter(BP>=40900000 & BP<=45000000) %>% select(VariantID)
+exclude_17q21.31
+
+# Inversion on chr 17 (40900000-45000000) (as in Krebs et al., 2020)
+exclude_chr21 <- MEGA.bim %>% filter(CHR == 21) %>% select(VariantID)
+exclude_chr21
+
+exclude_chrMT <- MEGA.bim %>% filter(CHR == 0) %>% select(VariantID)
+exclude_chrMT
+
+# https://www-ncbi-nlm-nih-gov.proxy.hsl.ucdenver.edu/pmc/articles/PMC5100670/
+# "In PLINK standard format, chromosomes X, Y and XY are numbered 23, 24 and 25, respectively."
+exclude_sexChr <- MEGA.bim %>% filter(CHR >= 23) %>% select(VariantID)
+
+exclude_GRS_SNPs <- exclude_GRS_SNPs
+
+plink.exclude <- rbind( exclude_HLApm200kb,
+                           exclude_8p23.1,
+                           exclude_17q21.31,
+                           exclude_chr21,
+                           exclude_chrMT,
+                           exclude_sexChr,
+                           exclude_GRS_SNPs ) %>%
+  unique()
+
+print(paste(nrow(plink.exclude), " variants to be excluded from PCA calculation.", sep = ""))
+
+setwd(dir.PCA)
+fwrite(plink.exclude,
+       "MEGA_041822_Plink_exclude_for_PCA_v0.1_JRS.txt",
+       col.names = FALSE,
+       row.names = FALSE,
+       quote = FALSE)
+```
+
+```{r}
+setwd(dir)
+analysis_meta <- fread("MEGA_041822_META_CeliacGRS_v0.1_JRS.csv")
+
+IDs_for_analysis <- analysis_meta %>%
+  select(MEGA.FID, MEGA.IID, EXCLUDE_from_analysis) %>%
+  filter(EXCLUDE_from_analysis == 0) %>%
+  unique() %>%
+  select(-c(EXCLUDE_from_analysis))
+
+IDs_for_analysis
+
+setwd(dir)
+fwrite(IDs_for_analysis, "MEGA_041822_CeliacGRS_IDS_FOR_ANALYSIS_v0.1_JRS.txt", col.names = FALSE, row.names = FALSE, quote = FALSE, sep = "\t")
+```
+
+#### Copy the file for use with Plink --keep to the PCA directory
+```{bash}
+cp -a '/Users/shawjes/Dropbox/EspinosaGroup/ANALYSIS/Celiac_MultiOmics/GRS/DSMIG_Shared/Manuscript_Figure1/Data/MEGA_041822_CeliacGRS_IDS_FOR_ANALYSIS_v0.1_JRS.txt' \
+'/Users/shawjes/Dropbox/EspinosaGroup/ANALYSIS/Celiac_MultiOmics/GRS/DSMIG_Shared/Manuscript_Figure1/Data/PCA'
+```
+
+#### View the files in the PCA directory
+```{r}
+# --keep file '/Users/shawjes/Dropbox/EspinosaGroup/ANALYSIS/Celiac_MultiOmics/GRS/DSMIG_Shared/Manuscript/Data/PCA/MEGA_022322_CeliacGRS_IDS_FOR_ANALYSIS_v0.1_JRS.txt'
+# --exclude file: '/Users/shawjes/Dropbox/EspinosaGroup/ANALYSIS/Celiac_MultiOmics/GRS/DSMIG_Shared/Manuscript/Data/PCA/MEGA_022322_Plink_exclude_for_PCA_v0.1_JRS.txt'
+
+list.files(dir.PCA)
+```
+
+#### # Filter the genotype data to the individuals in the Celiac GRS analysis:
+```{bash}
+# --keep file '/Users/shawjes/Dropbox/EspinosaGroup/ANALYSIS/Celiac_MultiOmics/GRS/DSMIG_Shared/Manuscript/Data/PCA/MEGA_022322_CeliacGRS_IDS_FOR_ANALYSIS_v0.1_JRS.txt'
+# --exclude file: '/Users/shawjes/Dropbox/EspinosaGroup/ANALYSIS/Celiac_MultiOmics/GRS/DSMIG_Shared/Manuscript/Data/PCA/MEGA_022322_Plink_exclude_for_PCA_v0.1_JRS.txt'
+
+cd '/Users/shawjes/Dropbox/EspinosaGroup/ANALYSIS/Celiac_MultiOmics/GRS/DSMIG_Shared/Manuscript_Figure1/Data/PCA'
+plink --bfile '/Users/shawjes/Dropbox/EspinosaGroup/DATA_MAIN/MEGA/Plink/Espinosa_MEGA2_HTP_GS_08132019_updated_callrate_passing_QC' \
+  --keep 'MEGA_041822_CeliacGRS_IDS_FOR_ANALYSIS_v0.1_JRS.txt' \
+  --make-bed \
+  --out 'MEGA_041822_Espinosa_MEGA2_HTP_GS_08132019_updated_callrate_passing_QC_KEEPforHLAvsCeliac_v0.1_JRS'
+```
+
+#### Remove variants we want to exclude from the PCA calculation:
+```{bash}
+cd '/Users/shawjes/Dropbox/EspinosaGroup/ANALYSIS/Celiac_MultiOmics/GRS/DSMIG_Shared/Manuscript_Figure1/Data/PCA'
+plink --bfile 'MEGA_041822_Espinosa_MEGA2_HTP_GS_08132019_updated_callrate_passing_QC_KEEPforHLAvsCeliac_v0.1_JRS' \
+  --exclude 'MEGA_041822_Plink_exclude_for_PCA_v0.1_JRS.txt' \
+  --make-bed \
+  --out 'MEGA_041822_Espinosa_MEGA2_HTP_GS_08132019_updated_callrate_passing_QC_KEEPforHLAvsCeliac_EXCLUDEvariants_v0.1_JRS'
+```
+
+#### Filter to individuals with max missingness per individual of 5%:
+```{bash}
+cd '/Users/shawjes/Dropbox/EspinosaGroup/ANALYSIS/Celiac_MultiOmics/GRS/DSMIG_Shared/Manuscript_Figure1/Data/PCA'
+plink --bfile 'MEGA_041822_Espinosa_MEGA2_HTP_GS_08132019_updated_callrate_passing_QC_KEEPforHLAvsCeliac_EXCLUDEvariants_v0.1_JRS' \
+  --mind 0.05 \
+  --make-bed \
+  --out 'MEGA_041822_Espinosa_MEGA2_HTP_GS_08132019_updated_callrate_passing_QC_KEEPforHLAvsCeliac_EXCLUDEvariants_mind05_v0.1_JRS'
+```
+
+#### Filter variants to keep variants with max missingness of 2%:
+```{bash}
+cd '/Users/shawjes/Dropbox/EspinosaGroup/ANALYSIS/Celiac_MultiOmics/GRS/DSMIG_Shared/Manuscript_Figure1/Data/PCA'
+plink --bfile 'MEGA_041822_Espinosa_MEGA2_HTP_GS_08132019_updated_callrate_passing_QC_KEEPforHLAvsCeliac_EXCLUDEvariants_mind05_v0.1_JRS' \
+  --geno 0.02 \
+  --make-bed \
+  --out 'MEGA_041822_Espinosa_MEGA2_HTP_GS_08132019_updated_callrate_passing_QC_KEEPforHLAvsCeliac_EXCLUDEvariants_mind05_geno0.02_v0.1_JRS'
+```
+
+#### Keep variants with minimum MAF 5% (Note: It's important to do this AFTER running --mind and --geno)
+```{bash}
+cd '/Users/shawjes/Dropbox/EspinosaGroup/ANALYSIS/Celiac_MultiOmics/GRS/DSMIG_Shared/Manuscript_Figure1/Data/PCA'
+plink --bfile 'MEGA_041822_Espinosa_MEGA2_HTP_GS_08132019_updated_callrate_passing_QC_KEEPforHLAvsCeliac_EXCLUDEvariants_mind05_geno0.02_v0.1_JRS' \
+  --maf 0.05 \
+  --make-bed \
+  --out 'MEGA_041822_Espinosa_MEGA2_HTP_GS_08132019_updated_callrate_passing_QC_KEEPforHLAvsCeliac_EXCLUDEvariants_mind05_geno0.02_maf0.05_v0.1_JRS'
+```
+
+#### Identify SNPs to retain variants with maximum pairwise correlation of 0.2; output the list for reference in the following step
+```{bash}
+cd '/Users/shawjes/Dropbox/EspinosaGroup/ANALYSIS/Celiac_MultiOmics/GRS/DSMIG_Shared/Manuscript_Figure1/Data/PCA'
+plink --bfile 'MEGA_041822_Espinosa_MEGA2_HTP_GS_08132019_updated_callrate_passing_QC_KEEPforHLAvsCeliac_EXCLUDEvariants_mind05_geno0.02_maf0.05_v0.1_JRS' \
+  --indep-pairwise 50 5 0.2 \
+  --out 'MEGA_041822_Espinosa_MEGA2_HTP_GS_08132019_updated_callrate_passing_QC_KEEPforHLAvsCeliac_EXCLUDEvariants_mind05_geno0.02_maf0.05_indeppairwise0.2_v0.1_JRS'
+```
+
+#### Reduce data to identified SNPs with maximum pairwise correlation of 0.2:
+```{bash}
+cd '/Users/shawjes/Dropbox/EspinosaGroup/ANALYSIS/Celiac_MultiOmics/GRS/DSMIG_Shared/Manuscript_Figure1/Data/PCA'
+plink --bfile 'MEGA_041822_Espinosa_MEGA2_HTP_GS_08132019_updated_callrate_passing_QC_KEEPforHLAvsCeliac_EXCLUDEvariants_mind05_geno0.02_maf0.05_v0.1_JRS' \
+  --extract 'MEGA_041822_Espinosa_MEGA2_HTP_GS_08132019_updated_callrate_passing_QC_KEEPforHLAvsCeliac_EXCLUDEvariants_mind05_geno0.02_maf0.05_indeppairwise0.2_v0.1_JRS.prune.in' \
+  --make-bed \
+  --out 'MEGA_041822_Espinosa_MEGA2_HTP_GS_08132019_updated_callrate_passing_QC_KEEPforHLAvsCeliac_EXCLUDEvariants_mind05_geno0.02_maf0.05_PRUNEDindeppairwise0.2_v0.1_JRS'
+```
+
+#### Perform PCA using the prepared input genotype data
+### Specify 'var-wts' to also output SNP loadings
+```{bash}
+cd '/Users/shawjes/Dropbox/EspinosaGroup/ANALYSIS/Celiac_MultiOmics/GRS/DSMIG_Shared/Manuscript_Figure1/Data/PCA'
+plink \
+  --bfile 'MEGA_041822_Espinosa_MEGA2_HTP_GS_08132019_updated_callrate_passing_QC_KEEPforHLAvsCeliac_EXCLUDEvariants_mind05_geno0.02_maf0.05_PRUNEDindeppairwise0.2_v0.1_JRS' \
+  --pca var-wts header \
+  --out 'MEGA_041822_Espinosa_MEGA2_HTP_GS_08132019_updated_callrate_passing_QC_KEEPforHLAvsCeliac_EXCLUDEvariants_mind05_geno0.02_maf0.05_PRUNEDindeppairwise0.2_v0.1_JRS'
+```
+
+#### Read in results of PCA performed specifically for the analysis dataset of HLA vs. Celiac status
+```{r}
+setwd(dir.PCA)
+pca.eigenvec <- fread("MEGA_041822_Espinosa_MEGA2_HTP_GS_08132019_updated_callrate_passing_QC_KEEPforHLAvsCeliac_EXCLUDEvariants_mind05_geno0.02_maf0.05_PRUNEDindeppairwise0.2_v0.1_JRS.eigenvec") %>%
+  rename(MEGA.FID = FID, MEGA.IID = IID)
+  #`colnames<-`(c("MEGA.FID", "MEGA.IID", paste("PC", seq(1:20), sep = "")))
+
+setwd(dir.PCA)
+pca.eigenval <- fread("MEGA_041822_Espinosa_MEGA2_HTP_GS_08132019_updated_callrate_passing_QC_KEEPforHLAvsCeliac_EXCLUDEvariants_mind05_geno0.02_maf0.05_PRUNEDindeppairwise0.2_v0.1_JRS.eigenval") %>%
+  rename(Eigenvalue = V1) %>%
+  mutate(PC = seq(1:20)) %>%
+  select(PC, Eigenvalue)
+
+setwd(dir.PCA)
+pca.loadings <- fread("MEGA_041822_Espinosa_MEGA2_HTP_GS_08132019_updated_callrate_passing_QC_KEEPforHLAvsCeliac_EXCLUDEvariants_mind05_geno0.02_maf0.05_PRUNEDindeppairwise0.2_v0.1_JRS.eigenvec.var")
+
+pca.eigenvec
+pca.eigenval
+pca.loadings
+```
+
+#### Read in the prepared dataset of HLA-DQ genotypes and non-HLA-DQ SNPs
+```{r}
+setwd(dir)
+analysisData.GRSorig <- fread("MEGA_041822_AnalysisData_CDGRS_Sharp2019_v0.1_JRS.csv")
+analysisData.GRSrevised <- fread("MEGA_041822_AnalysisData_CDGRS_Sharp2022_v0.1_JRS.csv")
+
+analysisData.GRSorig
+
+analysisData.GRSrevised
+```
+
+#### Read in the existing analysis metadata
+```{r}
+setwd(dir)
+analysis_meta <- fread("MEGA_041822_META_CeliacGRS_v0.1_JRS.csv")
+
+analysis_meta
+```
+
+#### Read in the full meta/comorb data and grab a few extra columns to add to analysis_meta
+```{r}
+setwd("/Users/shawjes/Dropbox/EspinosaGroup/DATA_MAIN/META/OneDrive_1_2-17-2022")
+meta_comorb.022021.selected <- fread("HTP_CLEANED_02_2021_v0.5_COMORB_MASTER_RecordID_vs_LabID.Labels.tsv") %>%
+  mutate(Female = ifelse(Sex == "Male", 0, ifelse(Sex == "Female", 1, NA))) %>%
+  select(FamilyID, RecordID,
+         #LabID, # Don't need LabID because these are all static variables (or they're supposed to be)
+         Sex, Female,
+         Race, Ethnicity,
+         Cohort_type, DS_diagnosis, OfficialDSDiagnosis, MRAbstractionStatus #,
+         #Weight_kg, Height_cm, BMI,
+         ) %>%
+  unique() %>%
+  mutate(Race_Ethnicity = paste(Race, ", ", Ethnicity, sep = ""))
+
+meta_comorb.022021.selected
+
+# Verify that each RecordID has only one unique category for Race_Ethnicity:
+meta_comorb.022021.selected %>%
+  select(RecordID, Race_Ethnicity) %>%
+  unique() %>%
+  group_by(RecordID) %>%
+  summarise(N = n()) %>%
+  arrange(desc(N)) %>%
+  filter(N>1)
+print("Good. Each RecordID has only one unique category for Race_Ethnicity.")
+```
+
+#### Add the updated analysis metadata (`analysis_meta01`) to the PC data
+```{r}
+pca.eigenvec01 <- pca.eigenvec %>%
+  left_join(analysis_meta, by = c("MEGA.FID", "MEGA.IID")) %>%
+  select(colnames(analysis_meta), everything())
+
+pca.eigenvec01
+```
+
+#### Make some PCA plots colored by self-reported race and ethnicity
+```{r}
+theme_set(theme_gray(base_size = 12, base_family = "Arial") +
+            theme(panel.border = element_rect(colour="black", fill = "transparent"),
+                  plot.title = element_text(face="bold", hjust = 0), # lineheight=.8, size=20,
+                  axis.text = element_text(color="black", size = 14),
+                  axis.text.x = element_text(angle = 0, hjust = NULL),
+                  strip.background = element_rect(colour="black", fill = "light grey", size = 1), # adjusts facet label borders (if any)
+                  panel.background = element_blank(),
+                  panel.grid = element_blank()
+          ))
+
+GrayBlue <- c("grey", "#2b8cbe")
+RedBlue <- c("#CD3333", "#1874CD")
+dosage_Blues1 <- c("#e3f2fa", "#2b8cbe", "dodgerblue4")
+dosage_Blues2 <- c("#e3f2fa", "#2b8cbe", "#0c6b9c")
+
+plot.PC1vsPC2 <- pca.eigenvec01 %>%
+  mutate(Race_Ethnicity = paste(Race, Ethnicity, sep = ", ")) %>%
+  ggplot(aes(x = PC1, y = PC2, color = Race_Ethnicity, fill = Race_Ethnicity)) +
+  geom_point() +
+  theme(aspect.ratio = 1.0,
+        legend.position = "right",
+        legend.title = element_blank()) +
+  ggtitle("Population stratification in the analysis cohort")
+
+plot.PC2vsPC3 <- pca.eigenvec01 %>%
+  mutate(Race_Ethnicity = paste(Race, Ethnicity, sep = ", ")) %>%
+  ggplot(aes(x = PC2, y = PC3, color = Race_Ethnicity, fill = Race_Ethnicity)) +
+  geom_point() +
+  theme(aspect.ratio = 1.0,
+        legend.position = "right",
+        legend.title = element_blank()) +
+  ggtitle("Population stratification in the analysis cohort")
+
+plot.PC1vsPC3 <- pca.eigenvec01 %>%
+  mutate(Race_Ethnicity = paste(Race, Ethnicity, sep = ", ")) %>%
+  ggplot(aes(x = PC1, y = PC3, color = Race_Ethnicity, fill = Race_Ethnicity)) +
+  geom_point() +
+  theme(aspect.ratio = 1.0,
+        legend.position = "right",
+        legend.title = element_blank()) +
+  ggtitle("Population stratification in the analysis cohort")
+
+plot.PC1vsPC2
+plot.PC2vsPC3
+plot.PC1vsPC3
+```
+
+#### Save the PCA plots to PNG and PDF
+```{r}
+filename <- "MEGA_041822_PCAplot_PC1_vs_PC2_v0.1_JRS"
+setwd(dir.PCA)
+ggsave(plot = plot.PC1vsPC2, filename = paste(filename, ".png", sep = ""), width = 10, height = 4, units = "in")
+setwd(dir.PCA)
+ggsave(plot = plot.PC1vsPC2, filename = paste(filename, ".pdf", sep = ""), device = cairo_pdf, width = 10, height = 4, units = "in")
+
+
+filename <- "MEGA_041822_PCAplot_PC2_vs_PC3_v0.1_JRS"
+setwd(dir.PCA)
+ggsave(plot = plot.PC2vsPC3, filename = paste(filename, ".png", sep = ""), width = 10, height = 4, units = "in")
+setwd(dir.PCA)
+ggsave(plot = plot.PC2vsPC3, filename = paste(filename, ".pdf", sep = ""), device = cairo_pdf, width = 10, height = 4, units = "in")
+
+
+filename <- "MEGA_041822_PCAplot_PC1_vs_PC3_v0.1_JRS"
+setwd(dir.PCA)
+ggsave(plot = plot.PC1vsPC3, filename = paste(filename, ".png", sep = ""), width = 10, height = 4, units = "in")
+setwd(dir.PCA)
+ggsave(plot = plot.PC1vsPC3, filename = paste(filename, ".pdf", sep = ""), device = cairo_pdf, width = 10, height = 4, units = "in")
+```
+
+#### Check if any key variables are significantly associated with these new PCs
+Background: Previous version of PCs excluded the HLA region from the PCA calculation, but did not exclude the 200kb on either side of the HLA region. Some of those PCs were highly significantly associated with Celiac status (e.g., PC6), so in this script I aimed to correct that.
+
+##### First check if any PC is associated with Celiac
+```{r}
+temp <- pca.eigenvec01 %>%
+  filter(EXCLUDE_from_analysis == 0) %>% # IMPORTANT
+  select(RecordID, Celiac,
+         #Age_at_visit, Sex,
+         PC1:PC20) %>%
+  unique() %>%
+  column_to_rownames("RecordID")
+
+glm(Celiac ~ .,
+    family = binomial(link = "logit"),
+    data = temp) %>%
+  tidy(conf.int = TRUE) %>%
+  select(-c(std.error, statistic)) %>%
+  filter(term != "(Intercept)") %>%
+  arrange(p.value)
+
+print("Great. Now having removed 200kb on either side of the human MHC region, none of the PCs are significantly associated with Celiac. Good. The goal of the PCs is to adjust for only background genetic ancestry and nothing else.")
+```
+
+##### Now check if any PC is associated with Sex
+No PC should be associated with Sex because we excluded X, Y, and XY from the input to the PCA calculation.
+```{r}
+temp <- pca.eigenvec01 %>%
+  mutate(Female = ifelse(Sex == "Male", 0, ifelse(Sex == "Female", 1, NA))) %>%
+  filter(EXCLUDE_from_analysis == 0) %>% # IMPORTANT
+  select(RecordID, Female,
+         PC1:PC20) %>%
+  unique() %>%
+  column_to_rownames("RecordID")
+
+glm(Female ~ .,
+    family = binomial(link = "logit"),
+    data = temp) %>%
+  tidy(conf.int = TRUE) %>%
+  select(-c(std.error, statistic)) %>%
+  filter(term != "(Intercept)") %>%
+  arrange(p.value)
+
+print("Good, none of the PCs are significantly associated with sex.")
+```
+
+
+# ARCHIVE BELOW
+
+##### Now check if any PC is associated DS diagnosis
+Theoretically they shouldn't be, because we excluded chromosome 21 from the input to the PCA calculation
+```{r}
+pca.eigenvec01$OfficialDSDiagnosis %>% unique()
+
+temp <- pca.eigenvec01 %>%
+  filter(EXCLUDE_from_analysis == 0) %>% # IMPORTANT
+  select(MEGA.IID, OfficialDSDiagnosis,
+         PC1:PC20) %>%
+  unique() %>%
+  #gather(key = "PC_index", value = "PC", PC1:PC20) %>%
+  mutate(dummy = 1) %>%
+  spread(key = OfficialDSDiagnosis, value = dummy) %>%
+  gather(key = "OfficialDSDiagnosis", value = "value", `Complete trisomy 21`:Unsure) %>%
+  mutate(value = ifelse(is.na(value), 0, value)) %>%
+  unique() %>%
+  select(MEGA.IID, OfficialDSDiagnosis, value, PC1:PC20) %>%
+  split(., .$OfficialDSDiagnosis)
+
+temp[[1]]
+
+x_vars <- paste("PC", seq(1:20), sep = "") %>% paste(., collapse = " + ")
+model_formula <- paste("value ~ ", x_vars, sep = "")
+set.seed(1234)
+fit.glm <- map(temp,
+               ~glm(as.formula(model_formula),
+                    family = binomial(link = "logit"),
+                    data = .))
+
+tidy.glm <- map2(.x = fit.glm,
+                .y = temp,
+                .f = ~tidy(x = .x, conf.int=TRUE, data = .y)) %>%
+  bind_rows(.id = "OfficialDSDiagnosis")
+
+0.05/5
+0.10/5
+tidy.glm %>%
+  filter(term != "(Intercept)") %>%
+  arrange(p.value) %>%
+  mutate(Padj_Bonferroni = p.value*5,
+         SigP0.10 = ifelse(p.value < 0.10, "Yes", "No"),
+         SigP0.05 = ifelse(p.value < 0.05, "Yes", "No")) %>%
+  select(-c(std.error, statistic)) %>%
+  split(., .$OfficialDSDiagnosis)
+```
+
+#### Plot PC9 vs. 6, 7, 3, 17, 19 and color by DS diagnosis...
+```{r}
+temp1 <- pca.eigenvec01 %>%
+  filter(EXCLUDE_from_analysis == 0) %>% # IMPORTANT
+  select(MEGA.IID, OfficialDSDiagnosis,
+         PC1:PC20) %>%
+  unique()
+
+temp2 <- temp1 %>%
+  group_by(OfficialDSDiagnosis) %>%
+  summarise(N = n()) %>%
+  arrange(N) %>%
+  mutate(rank_by_size = row_number()) %>%
+  select(-c(N)) 
+
+temp3 <- temp2 %>%
+  mutate(OfficialDSDiagnosis = factor(OfficialDSDiagnosis)) %>%
+  left_join(temp1, by = c("OfficialDSDiagnosis")) %>%
+  mutate(OfficialDSDiagnosis = factor(OfficialDSDiagnosis, levels = c(temp2$OfficialDSDiagnosis)))
+
+temp3$OfficialDSDiagnosis %>% levels()
+
+temp3$PC9 %>% summary()
+temp3$PC6 %>% summary()
+temp3$PC3 %>% summary()
+temp3$PC7 %>% summary()
+
+plot.PC9vsPC6.byDSdx <- temp3 %>%
+  ggplot(aes(x = PC9, y = PC6, color = OfficialDSDiagnosis, fill = OfficialDSDiagnosis)) +
+  geom_point(alpha = 0.4, size = 0.5) +
+  theme(aspect.ratio = 1.0,
+        legend.position = "right",
+        legend.title = element_blank()) +
+  xlim(-0.1, 0.45) +
+  ylim(-0.5, 0.3) +
+  ggtitle("Population stratification by DS type")
+plot.PC9vsPC6.byDSdx_excludeCompeteT21 <- temp3 %>%
+  filter(OfficialDSDiagnosis != "Complete trisomy 21") %>%
+  ggplot(aes(x = PC9, y = PC6, color = OfficialDSDiagnosis, fill = OfficialDSDiagnosis)) +
+  geom_point(alpha = 0.4, size = 0.5) +
+  theme(aspect.ratio = 1.0,
+        legend.position = "right",
+        legend.title = element_blank()) +
+  xlim(-0.1, 0.45) +
+  ylim(-0.5, 0.3) +
+  ggtitle("Population stratification by DS type")
+
+
+plot.PC9vsPC3.byDSdx <- temp3 %>%
+  ggplot(aes(x = PC9, y = PC3, color = OfficialDSDiagnosis, fill = OfficialDSDiagnosis)) +
+  geom_point(alpha = 0.4, size = 0.5) +
+  theme(aspect.ratio = 1.0,
+        legend.position = "right",
+        legend.title = element_blank()) +
+  xlim(-0.1, 0.45) +
+  ylim(-0.45, 0.4) +
+  ggtitle("Population stratification by DS type")
+plot.PC9vsPC3.byDSdx_excludeCompeteT21 <- temp3 %>%
+  filter(OfficialDSDiagnosis != "Complete trisomy 21") %>%
+  ggplot(aes(x = PC9, y = PC3, color = OfficialDSDiagnosis, fill = OfficialDSDiagnosis)) +
+  geom_point(alpha = 0.4, size = 0.5) +
+  theme(aspect.ratio = 1.0,
+        legend.position = "right",
+        legend.title = element_blank()) +
+  xlim(-0.1, 0.45) +
+  ylim(-0.45, 0.4) +
+  ggtitle("Population stratification by DS type")
+
+plot.PC9vsPC7.byDSdx <- temp3 %>%
+  ggplot(aes(x = PC9, y = PC7, color = OfficialDSDiagnosis, fill = OfficialDSDiagnosis)) +
+  geom_point(alpha = 0.4, size = 0.5) +
+  theme(aspect.ratio = 1.0,
+        legend.position = "right",
+        legend.title = element_blank()) +
+  xlim(-0.1, 0.45) +
+  ylim(-0.35, 0.55) +
+  ggtitle("Population stratification by DS type")
+plot.PC9vsPC7.byDSdx_excludeCompeteT21 <- temp3 %>%
+  filter(OfficialDSDiagnosis != "Complete trisomy 21") %>%
+  ggplot(aes(x = PC9, y = PC7, color = OfficialDSDiagnosis, fill = OfficialDSDiagnosis)) +
+  geom_point(alpha = 0.4, size = 0.5) +
+  theme(aspect.ratio = 1.0,
+        legend.position = "right",
+        legend.title = element_blank()) +
+  xlim(-0.1, 0.45) +
+  ylim(-0.35, 0.55) +
+  ggtitle("Population stratification by DS type")
+
+
+temp2
+plot.PC9vsPC6.byDSdx
+plot.PC9vsPC6.byDSdx_excludeCompeteT21
+
+plot.PC9vsPC3.byDSdx
+plot.PC9vsPC3.byDSdx_excludeCompeteT21
+
+plot.PC9vsPC7.byDSdx
+plot.PC9vsPC7.byDSdx_excludeCompeteT21
+```
+
+
+```{r}
+temp3 %>%
+  filter(OfficialDSDiagnosis != "Complete trisomy 21") %>%
+  ggplot(aes(x = PC9, y = PC3, color = OfficialDSDiagnosis, fill = OfficialDSDiagnosis)) +
+  geom_point(alpha = 0.4, size = 0.5) +
+  theme(aspect.ratio = 1.0,
+        legend.position = "right",
+        legend.title = element_blank()) +
+  #xlim(-0.1, 0.45) +
+  #ylim(-0.45, 0.4) +
+  ggtitle("Population stratification by DS type")
+
+temp3 %>%
+  filter(OfficialDSDiagnosis != "Unsure" &
+           OfficialDSDiagnosis != "Not tested") %>%
+  ggplot(aes(x = PC9, y = PC3, color = OfficialDSDiagnosis, fill = OfficialDSDiagnosis)) +
+  geom_point(alpha = 0.4, size = 0.5) +
+  theme(aspect.ratio = 1.0,
+        legend.position = "right",
+        legend.title = element_blank()) +
+  #xlim(-0.1, 0.45) +
+  #ylim(-0.45, 0.4) +
+  ggtitle("Population stratification by DS type")
+
+temp3 %>%
+  filter(OfficialDSDiagnosis != "Unsure" &
+           OfficialDSDiagnosis != "Not tested" &
+           OfficialDSDiagnosis != "Complete trisomy 21") %>%
+  ggplot(aes(x = PC9, y = PC3, color = OfficialDSDiagnosis, fill = OfficialDSDiagnosis)) +
+  geom_point(alpha = 0.4, size = 0.5) +
+  theme(aspect.ratio = 1.0,
+        legend.position = "right",
+        legend.title = element_blank()) +
+  #xlim(-0.1, 0.45) +
+  #ylim(-0.45, 0.4) +
+  ggtitle("Population stratification by DS type")
+```
+
+#### LATER WHEN TIME
+
+#### Read in SNP loadings for ancestry PCA
+```{r}
+setwd(dir.PCA)
+pca.snp_loadings <- fread("MEGA_022322_Espinosa_MEGA2_HTP_GS_08132019_updated_callrate_passing_QC_KEEPforHLAvsCeliac_EXCLUDEvariants_mind05_geno0.02_maf0.05_PRUNEDindeppairwise0.2_v0.1_JRS.eigenvec.var")
+
+pca.snp_loadings
+```
+
+```{r}
+temp3 %>%
+  select(-rank_by_size) %>%
+  gather(PC1:PC20, key = "PC_index", value = "PC") %>%
+  mutate(PC_index = gsub("PC", "", PC_index)) %>%
+  mutate(PC_index = as.numeric(PC_index)) %>%
+  arrange(PC_index) %>%
+  ggplot(aes(x = PC, y = ..scaled..)) +
+  geom_density() +
+  facet_wrap(~PC_index, scales = "free")
+
+pca.snp_loadings %>%
+  select(CHR, PC9) %>%
+  rename(PC9_loading = PC9) %>%
+  ggplot(aes(x = CHR, PC9_loading)) +
+  geom_point()
+
+pca.snp_loadings %>%
+  select(CHR, PC9) %>%
+  rename(PC9_loading = PC9) %>%
+  ggplot(aes(x = PC9_loading, y = ..scaled..)) +
+  geom_density() +
+  facet_wrap(~CHR)
+
+pca.snp_loadings %>%
+  select(CHR, PC9) %>%
+  rename(PC9_loading = PC9) %>%
+  group_by(CHR) %>%
+  summarise(mean_PC9_loading = mean(PC9_loading)) %>%
+  mutate(CHR = as.factor(CHR)) %>%
+  ggplot(aes(x = CHR, y = mean_PC9_loading)) +
+  geom_bar(stat = "identity")
+pca.snp_loadings %>%
+  select(CHR, PC9) %>%
+  rename(PC9_loading = PC9) %>%
+  group_by(CHR) %>%
+  summarise(median_PC9_loading = median(PC9_loading)) %>%
+  mutate(CHR = as.factor(CHR)) %>%
+  ggplot(aes(x = CHR, y = median_PC9_loading)) +
+  geom_bar(stat = "identity")
+pca.snp_loadings %>%
+  select(CHR, PC9) %>%
+  rename(PC9_loading = PC9) %>%
+  mutate(abs.PC9_loading = abs(PC9_loading)) %>%
+  group_by(CHR) %>%
+  summarise(mean_abs.PC9_loading = mean(abs.PC9_loading)) %>%
+  mutate(CHR = as.factor(CHR)) %>%
+  ggplot(aes(x = CHR, y = mean_abs.PC9_loading)) +
+  geom_bar(stat = "identity")
+pca.snp_loadings %>%
+  select(CHR, PC9) %>%
+  rename(PC9_loading = PC9) %>%
+  mutate(abs.PC9_loading = abs(PC9_loading)) %>%
+  group_by(CHR) %>%
+  summarise(max_abs.PC9_loading = max(abs.PC9_loading)) %>%
+  mutate(CHR = as.factor(CHR)) %>%
+  ggplot(aes(x = CHR, y = max_abs.PC9_loading)) +
+  geom_bar(stat = "identity")
+# Okay, so what's up with PC9 on chromosome 19?
+
+
+pca.snp_loadings %>%
+  select(CHR, PC9) %>%
+  filter(PC9 > 0) %>%
+  rename(pos_PC9_loading = PC9) %>%
+  group_by(CHR) %>%
+  summarise(mean.pos_PC9_loading = mean(pos_PC9_loading)) %>%
+  mutate(CHR = as.factor(CHR)) %>%
+  ggplot(aes(x = CHR, y = mean.pos_PC9_loading)) +
+  geom_bar(stat = "identity")
+
+pca.snp_loadings %>%
+  select(CHR, PC9) %>%
+  ggplot(aes(x = PC9, y = ..scaled..)) +
+  geom_density()
+# What's in PC9 below -2 and above +2?
+
+pca.snp_loadings %>%
+  select(CHR, PC9) %>%
+  group_by(CHR) %>%
+  summarise(N_variants_input = n(),
+            mean_PC9_loading = mean(PC9),
+            mean_PC9_loading_per_variant = mean_PC9_loading/N_variants_input) %>%
+  arrange(desc(abs(mean_PC9_loading_per_variant)))
+# Need to put this into context as a percentage of the number of variants on each chromosome that were used as input to the PCA....
+```
+
+```{r}
+setwd(dir.PCA)
+pca.input <- fread("MEGA_022322_Espinosa_MEGA2_HTP_GS_08132019_updated_callrate_passing_QC_KEEPforHLAvsCeliac_EXCLUDEvariants_mind05_geno0.02_maf0.05_PRUNEDindeppairwise0.2_v0.1_JRS.bim")
+pca.input
+
+pca_input.variants_per_CHR = pca.input %>%
+  rename(CHR = V1) %>%
+  group_by(CHR) %>%
+  summarise(N_variants_input = n())
+pca_input.variants_per_CHR
+
+
+temp4 <- pca.snp_loadings %>%
+  select(CHR, PC9) %>%
+  group_by(CHR) %>%
+  summarise(N = n()) %>%
+  arrange(desc(N)) %>%
+  left_join(pca_input.variants_per_CHR, by = "CHR")
+temp401 <- temp4 %>%
+  mutate(Total_variants_input = sum(N_variants_input),
+         Pct_of_variants_input = 100*N/Total_variants_input)
+
+# "There are four main types of chromosomes: metacentric, submetacentric, acrocentric, and telocentric. Chromosomes are found within the nucleus of most living cells and consist of DNA that is tightly wound into thread-like structures.
+
+pca_input.variants_per_CHR
+
+temp401
+```
+
+```{r}
+pca.snp_loadings %>%
+  select(CHR, VAR, A1, A2, PC9) %>%
+  unique() %>%
+  arrange(desc(PC9)) %>%
+  ggplot(aes(x = PC9, y = ..scaled..)) +
+  geom_density()
+
+
+pca.snp_loadings %>%
+  select(CHR, VAR, A1, A2, PC2) %>%
+  unique() %>%
+  arrange(desc(PC2)) %>%
+  ggplot(aes(x = PC2, y = ..scaled..)) +
+  geom_density()
+
+pca.snp_loadings %>%
+  select(CHR, VAR, A1, A2, PC15) %>%
+  unique() %>%
+  arrange(desc(PC15)) %>%
+  ggplot(aes(x = PC15, y = ..scaled..)) +
+  geom_density()
+```
+
+
+```{r}
+%>%
+  mutate(Model_Formula = "Celiac ~ Dosage.GRS_Allele + PC1 + PC2 + PC3 + PC4 + PC5") %>%
+  select(Model_Formula, everything()) %>%
+  filter(term == "as.numeric(Dosage.GRS_Allele)") %>%
+  rename(Term = term, logOR = estimate, `SE (logOR)` = std.error, `conf.low (logOR)` = conf.low, `conf.high (logOR)` = conf.high, P = p.value) %>%
+  ungroup() %>%
+  mutate(OR = exp(logOR),
+         `SE (OR)` = exp(`SE (logOR)`),
+         `conf.low (OR)` = exp(`conf.low (logOR)`),
+         `conf.high (OR)` = exp(`conf.high (logOR)`),
+         Q = p.adjust(P, method = "BH")) %>%
+  arrange(Q) %>%
+  select(Model_Formula,
+         SNP,
+         Term,
+         OR, `SE (OR)`, `conf.low (OR)`, `conf.high (OR)`,
+         P, Q,
+         logOR, `SE (logOR)`, `conf.low (logOR)`, `conf.high (logOR)`, statistic, everything()) %>%
+  arrange(Q) %>%
+  select(-c(logOR, `SE (logOR)`, `conf.low (logOR)`, `conf.high (logOR)`, statistic)) %>%
+  arrange(P)
+
+
+lm(Female ~ .,
+    family = binomial(link = "logit"),
+    data = temp) %>%
+  tidy(conf.int = TRUE) %>%
+  select(-c(std.error, statistic)) %>%
+  filter(term != "(Intercept)") %>%
+  arrange(p.value)
+
+print("Good, none of the PCs are significantly associated with sex.")
+```
+
+
+
+
+
+```{r}
+%>%
+  rename(MEGA.FID = V1, MEGA.IID = V2) %>%
+  mutate(temp = gsub("_HTP", "_|HTP", MEGA.IID)) %>%
+  separate(temp, into = c("rm", "LabID"), sep = "[|]", extra = "merge", remove = FALSE) %>%
+  select(MEGA.FID, MEGA.IID, temp, rm, LabID, everything()) %>%
+  select(-c(temp, rm)) %>%
+  mutate(temp = gsub("A", "A_", LabID)) %>%
+  separate(temp, into = c("HTP_ID", "SampleNumber"), sep = "_", extra = "merge", remove = FALSE) %>%
+  select(MEGA.FID, MEGA.IID, temp, HTP_ID, SampleNumber, everything()) %>%
+  select(-c(temp, SampleNumber)) %>%
+  filter(grepl("A", LabID) == TRUE) %>%
+  select(-LabID) %>%
+  select(MEGA.FID, MEGA.IID, HTP_ID, everything())
+#pca.HLAvsCeliac
+
+colnames(pca.HLAvsCeliac)[-c(1:3)] <- paste("PC", seq(1:20), sep = "")
+
+pca.HLAvsCeliac %>% nrow()
+# [1] 213
+# Good, PCA completed successfully for all 213 IDs intended to be kept for analysis.
+
+# View the PC dataframe:
+pca.HLAvsCeliac
+```
+
+#### Check that the IIDs in the PCA results match the ones I intended to use, matching up to the non-HLA-DQ SNP dataset and 
+```{r}
+setwd("/Users/shawjes/Dropbox/EspinosaGroup/ANALYSIS/Celiac_MultiOmics/GRS/Analysis_Data/NonHLADR_SNP_Dosage")
+nonHLA_snp_dosage <- fread("MEGA_061821_CeliacGRS_NonHLADQ_SNPs_Prep32of38_plus_CeliacStatus_v0.1_JRS.csv")
+
+setwd("/Users/shawjes/Dropbox/EspinosaGroup/ANALYSIS/Celiac_MultiOmics/GRS/Analysis_Data/Celiac_plus_Metadata")
+HLA_DQ_genotypes <- fread("040521_AnalysisData_HLADQ_Genotypes_Sharp7.5_LONG_v6.1_JRS.csv") %>%
+  rename(MEGA.IID = MEGAorig.IID)
+
+identical(pca.HLAvsCeliac %>% select(MEGA.IID) %>% unique() %>% arrange(MEGA.IID),
+          nonHLA_snp_dosage %>% select(MEGA.IID) %>% unique() %>% arrange(MEGA.IID))
+#[1] TRUE
+
+identical(pca.HLAvsCeliac %>% select(MEGA.IID) %>% unique() %>% arrange(MEGA.IID),
+          HLA_DQ_genotypes %>% select(MEGA.IID) %>% unique() %>% arrange(MEGA.IID))
+#[1] TRUE
+
+# ALL GOOD!
+```
+
+# Save PCs to CSV
+```{r}
+fwrite(pca.HLAvsCeliac, "/Users/shawjes/Dropbox/EspinosaGroup/ANALYSIS/Celiac_MultiOmics/GRS/MEGA_AnalysisData/PCA/MEGA_061821_CeliacGRS_AncestryPCs_Espinosa_MEGA2_HTP_GS_08132019_updated_callrate_passing_QC_KEEPforHLAvsCeliac_chr1through20and22_EXCLUDEvariants_mind05_geno02_maf05_PRUNEDindeppairwise0.2_v0.1_JRS.csv")
+```
+

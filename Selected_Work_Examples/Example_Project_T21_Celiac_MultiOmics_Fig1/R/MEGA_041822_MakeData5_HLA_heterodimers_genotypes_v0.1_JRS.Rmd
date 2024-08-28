@@ -1,0 +1,678 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+#### Load frequently used packages
+```{r}
+library(openxlsx)
+library(ggrepel)
+library(dplyr)
+library(tidyr)
+library(data.table)
+library(broom)
+library(broomExtra)
+library(tibble)
+library(sjstats)
+library(car)
+library(lme4)
+library(lmerTest)
+library(ggplot2)
+library(tibble)
+library(modelr)
+library(tidyverse)
+#library(miceadds)
+library(ggforce)
+require(openxlsx)
+library(tidyverse)
+library(caret)
+library(glmnet)
+library(ggplot2)
+select <- dplyr::select
+filter <- dplyr::filter
+```
+
+#### Print session info for reproducibility
+```{r}
+save.sessionInfo <- sessionInfo()
+
+save.sessionInfo
+```
+
+#### Define in/out directory used in this script
+```{r}
+dir <- "/Users/shawjes/Dropbox/EspinosaGroup/ANALYSIS/Celiac_MultiOmics/GRS/DSMIG_Shared/Manuscript_Figure1/Data"
+dir.Anno.GRSoriginal <- "/Users/shawjes/Dropbox/EspinosaGroup/ANALYSIS/Celiac_MultiOmics/GRS/DSMIG_Shared/Manuscript_Figure1/Annotation/GRSoriginal"
+dir.Anno.GRSrevised <- "/Users/shawjes/Dropbox/EspinosaGroup/ANALYSIS/Celiac_MultiOmics/GRS/DSMIG_Shared/Manuscript_Figure1/Annotation/GRSoriginal"
+```
+
+#### Load MEGA to HTP ID key
+```{r}
+setwd(dir)
+MEGA.IDkey <- fread("MEGA_041822_MEGA2_to_HTP_ID_key_v0.1_JRS.csv")
+
+MEGA.IDkey
+```
+
+#### Put the column names representing identifiers into a vector for reference below
+```{r}
+ID_colnames <- c("FamilyID", "RecordID", "MEGA.FID", "MEGA.IID", "MEGA.LabID")
+```
+
+#### Load the analysis metadata
+```{r}
+setwd(dir)
+meta.MEGA.T21_visit1_Celiac <- fread("MEGA_041822_META_CeliacGRS_v0.1_JRS.csv")
+
+meta.MEGA.T21_visit1_Celiac
+```
+
+##### For reference later, read in supplemental tables from Sharp et al., 2019
+```{r}
+setwd(dir.Anno.GRSoriginal)
+Table_S2 <- read.xlsx("apt15826-sup-0001-supinfo.xlsx", sheet = "Table S2", startRow = 3) %>%
+  separate(`Odds.Ratio.[95%.CI]`, into = c("OR", "CI"), sep = " ", extra = "merge", remove = TRUE) %>%
+  rename(OR.GRS = OR,
+         CI.GRS = CI,
+         Weight.GRS = `Weight.(β)`)
+Table_S2
+
+setwd(dir.Anno.GRSoriginal)
+Table_S3 <- read.xlsx("apt15826-sup-0001-supinfo.xlsx", sheet = "Table S3", startRow = 3) %>%
+  rename(OR.GRS = OR,
+         Weight.GRS = `Weight.(β)`)
+Table_S3
+```
+
+#### Read in imputed HLA genotype data provided by Paul Norman
+```{r}
+setwd(dir.GRSdata)
+hla.imputed <- openxlsx::read.xlsx("EspinosaHLAstudy_HLAcalls_PJN.xlsx")
+
+#hla.imputed %>% colnames()
+colnames(hla.imputed)<-c("MEGA.LabID",
+                         "Race",
+                         "Ethnicity",
+                         "sample.id",
+                         "HLA-A.1",
+                         "HLA-A.2",
+                         "HLA-B.1",
+                         "HLA-B.2",
+                         "HLA-C.1",
+                         "HLA-C.2",
+                         "HLA-DRB1.1",
+                         "HLA-DRB1.2",
+                         "HLA-DQA1.1",
+                         "HLA-DQA1.2",
+                         "HLA-DQB1.1",
+                         "HLA-DQB1.2",
+                         "HLA-DPB1.1",
+                         "HLA-DPB1.2",
+                         "Comments")
+
+hla.imputed
+
+# Check that MEGA.LabID == sample.id
+hla.imputed %>% filter(MEGA.LabID!=sample.id | is.na(MEGA.LabID) | is.na(sample.id))
+# Good
+```
+
+#### Join with the MEGA to HTP ID key and prepared analysis metadata
+```{r}
+hla.imputed01 <- hla.imputed %>%
+  # Remove sample.id since it is redundant, as shown above.
+  select(-c(sample.id)) %>%
+  # Remove metadata columns in the data we got back from Norman's group; to be replaced at time of analysis with latest version of metadata.
+  select(-c(Race, Ethnicity)) %>%
+  left_join(MEGA.IDkey, by = "MEGA.LabID") %>%
+  select(colnames(MEGA.IDkey), everything()) %>%
+  select(-c(HTP_participant, In_plink_fam)) %>%
+  full_join(meta.MEGA.T21_visit1_Celiac, by = ID_colnames)
+
+# View the data before further manipulation:
+hla.imputed01
+
+rm(hla.imputed); gc()
+
+print("Note: I am purposely calling the LabID column MEGA.LabID because it is an identifier linked to static data. The genetic data shouldn't vary by which sample was used for genotyping (if it does, that's most likely a quality control problem). In analyses using the MEGA genetic data, we will likely want to join the genetic datasets with metadata by the LabID relevant to the other key variables in the analysis. For example, in this project we are looking at Celiac status at visit 1, so when we add in our metadata we will probably want to use age at visit 1 instead of age at time of the sample used for genotyping.")
+```
+
+#### Convert HLA genotype dataset into long format
+```{r}
+hla.imputed_long <- hla.imputed01 %>%
+  gather(key="Locus", value="Allele", `HLA-A.1`:`HLA-DPB1.2`) %>%
+  mutate(Locus = gsub("[.]1", "", Locus),
+         Locus = gsub("[.]2", "", Locus)) %>%
+  select(FamilyID, RecordID, MEGA.FID, MEGA.IID, MEGA.LabID,
+         Locus, Allele, Comments, everything())
+
+hla.imputed_long
+```
+
+#### Verify that each participant has exactly two HLA alleles for each locus
+```{r}
+if (hla.imputed_long %>%
+  filter(EXCLUDE_from_analysis == 0) %>%
+    select(MEGA.IID, Locus, Allele) %>%
+    group_by(MEGA.IID, Locus) %>%
+    summarise(N=n()) %>%
+    arrange(desc(N)) %>%
+    filter(N!=2) %>%
+    nrow() == 0) {
+  print("All IIDs have exactly 2 alleles for each locus. Good!")
+  } else {
+    print("Oops, not all IIDs have exactly 2 alleles for each locus (and they should).")
+  }
+
+if (hla.imputed_long %>%
+  filter(EXCLUDE_from_analysis == 0) %>%
+    select(RecordID, Locus, Allele) %>%
+    group_by(RecordID, Locus) %>%
+    summarise(N=n()) %>%
+    arrange(desc(N)) %>%
+    filter(N!=2) %>%
+    nrow() == 0) {
+  print("All RecordIDs have exactly 2 alleles for each locus. Good!")
+  } else {
+    print("Oops, not all RecordIDs have exactly 2 alleles for each locus (and they should).")
+  }
+```
+
+#### Double check that the EXCLUDE filter produces a dataset that includes only one set of HLA typing per RecordID
+```{r}
+if ( hla.imputed_long %>%
+       filter(EXCLUDE_from_analysis == 0) %>%
+     select(RecordID, MEGA.LabID) %>%
+     unique() %>%
+     group_by(RecordID) %>%
+     summarise(N_LabIDs = n()) %>%
+     filter(N_LabIDs > 1) %>%
+     nrow() == 0 ) {
+  print("All RecordIDs have only one LabID. Good!")
+  } else {
+    print("Oops, not all RecordIDs have only one LabID.")
+    }
+```
+
+#### View the long format dataset so far
+```{r}
+hla.imputed_long
+```
+
+#### Make a dataset of the HLA-DQ alleles and output to CSV and TSV
+```{r}
+analysisData.alleles <- hla.imputed_long %>%
+  select(FamilyID, RecordID, MEGA.FID, MEGA.IID, MEGA.LabID, Locus, Allele, EXCLUDE_from_analysis) %>%
+  mutate(Locus_Allele = paste(Locus, Allele, sep = "")) %>%
+  select(-c(Allele)) %>%
+  mutate(Has.Locus_Allele = 1) %>%
+  group_by(FamilyID, RecordID, MEGA.FID, MEGA.IID, MEGA.LabID, EXCLUDE_from_analysis, Locus_Allele) %>%
+  summarise(Dosage.Locus_Allele = sum(Has.Locus_Allele)) %>%
+  ungroup() %>%
+  arrange(desc(Dosage.Locus_Allele)) %>%
+  spread(key = Locus_Allele, value = Dosage.Locus_Allele) %>%
+  gather(key = "Locus_Allele", value = "Dosage.Locus_Allele", `HLA-A*01:01`:`HLA-DRB1*16:02`) %>%
+  mutate(Dosage.Locus_Allele = ifelse(is.na(Dosage.Locus_Allele), 0, Dosage.Locus_Allele)) %>%
+  separate(Locus_Allele, into = c("Locus", "Allele"), sep = "[*]", extra = "merge", remove = FALSE) %>%
+  select(FamilyID, RecordID, MEGA.FID, MEGA.IID, MEGA.LabID, Locus, Locus_Allele, Dosage.Locus_Allele, EXCLUDE_from_analysis, everything())
+
+analysisData.alleles
+
+if (analysisData.alleles %>%
+  filter(EXCLUDE_from_analysis == 0) %>%
+    select(MEGA.IID, Locus, Locus_Allele, Dosage.Locus_Allele) %>%
+    group_by(MEGA.IID, Locus) %>%
+    summarise(Total_Dosage.Locus = sum(Dosage.Locus_Allele)) %>%
+    arrange(desc(Total_Dosage.Locus)) %>%
+    filter(Total_Dosage.Locus != 2) %>%
+    nrow() == 0) {
+  print("All IIDs have exactly 2 alleles for each locus. Good!")
+  } else {
+    print("Oops, not all IIDs have exactly 2 alleles for each locus (and they should).")
+  }
+
+if (analysisData.alleles %>%
+  filter(EXCLUDE_from_analysis == 0) %>%
+    select(RecordID, Locus, Locus_Allele, Dosage.Locus_Allele) %>%
+    group_by(RecordID, Locus) %>%
+    summarise(Total_Dosage.Locus = sum(Dosage.Locus_Allele)) %>%
+    arrange(desc(Total_Dosage.Locus)) %>%
+    filter(Total_Dosage.Locus != 2) %>%
+    nrow() == 0) {
+  print("All RecordIDs have exactly 2 alleles for each locus. Good!")
+  } else {
+    print("Oops, not all RecordIDs have exactly 2 alleles for each locus (and they should).")
+  }
+
+analysisData.alleles %>%
+  split(., .$Locus_Allele) %>%
+  lapply(dim) %>%
+  unique()
+  
+analysisData.alleles
+
+setwd(dir)
+fwrite(analysisData.alleles, "MEGA_041822_Imputed_HLA_Alleles_v0.1_JRS.csv")
+fwrite(analysisData.alleles, "MEGA_041822_Imputed_HLA_Alleles_v0.1_JRS.tsv", sep = "\t")
+```
+
+#### Make a dataset of the HLA-DQ allele groups and output to CSV and TSV
+```{r}
+analysisData.alleleGroups <- hla.imputed_long %>%
+  select(FamilyID, RecordID, MEGA.FID, MEGA.IID, MEGA.LabID, Locus, Allele, EXCLUDE_from_analysis) %>%
+  separate(Allele, into = c("AlleleGroup", "Protein"), sep = "[:]", extra = "merge", remove = FALSE) %>%
+  mutate(Locus_AlleleGroup = paste(Locus, AlleleGroup, sep = "")) %>%
+  mutate(Has.Locus_AlleleGroup = 1) %>%
+  select(FamilyID, RecordID, MEGA.FID, MEGA.IID, MEGA.LabID, Locus_AlleleGroup, Has.Locus_AlleleGroup, EXCLUDE_from_analysis) %>%
+  group_by(FamilyID, RecordID, MEGA.FID, MEGA.IID, MEGA.LabID, EXCLUDE_from_analysis, Locus_AlleleGroup ) %>%
+  summarise(Dosage.Locus_AlleleGroup = sum(Has.Locus_AlleleGroup)) %>%
+  ungroup() %>%
+  arrange(desc(Dosage.Locus_AlleleGroup)) %>%
+  arrange(Dosage.Locus_AlleleGroup) %>%
+  spread(key = Locus_AlleleGroup, value = Dosage.Locus_AlleleGroup) %>%
+  gather(key = "Locus_AlleleGroup", value = "Dosage.Locus_AlleleGroup", `HLA-A*01`:`HLA-DRB1*16`) %>%
+  mutate(Dosage.Locus_AlleleGroup = ifelse(is.na(Dosage.Locus_AlleleGroup), 0, Dosage.Locus_AlleleGroup)) %>%
+  separate(Locus_AlleleGroup, into = c("Locus", "AlleleGroup"), sep = "[*]", extra = "merge", remove = FALSE) %>%
+  select(FamilyID, RecordID, MEGA.FID, MEGA.IID, MEGA.LabID, Locus, Locus_AlleleGroup, Dosage.Locus_AlleleGroup, EXCLUDE_from_analysis, everything())
+
+# analysisData.alleleGroups <- hla.imputed_long %>%
+#   select(FamilyID, RecordID, MEGA.FID, MEGA.IID, MEGA.LabID, Locus, Allele, EXCLUDE_from_analysis) %>%
+#   separate(Allele, into = c("AlleleGroup", "Protein"), sep = "[:]", extra = "merge", remove = FALSE) %>%
+#   mutate(Locus_AlleleGroup = paste(Locus, AlleleGroup, sep = "")) %>%
+#   select(FamilyID, RecordID, MEGA.FID, MEGA.IID, MEGA.LabID, Locus_AlleleGroup, EXCLUDE_from_analysis) %>%
+#   mutate(Has.Locus_AlleleGroup = 1) %>%
+#   group_by(FamilyID, RecordID, MEGA.FID, MEGA.IID, MEGA.LabID, EXCLUDE_from_analysis, Locus_AlleleGroup) %>%
+#   summarise(Dosage.Locus_AlleleGroup = sum(Has.Locus_AlleleGroup)) %>%
+#   arrange(desc(Dosage.Locus_AlleleGroup)) %>%
+#   spread(key = Locus_AlleleGroup, value = Dosage.Locus_AlleleGroup) %>%
+#   gather(key = "Locus_AlleleGroup", value = "Dosage.Locus_AlleleGroup", `HLA-A*01`:`HLA-DRB1*16`) %>%
+#   mutate(Dosage.Locus_AlleleGroup = ifelse(is.na(Dosage.Locus_AlleleGroup), 0, Dosage.Locus_AlleleGroup))
+
+# analysisData.alleleGroups <- hla.imputed_long %>%
+#   select(FamilyID, RecordID, MEGA.FID, MEGA.IID, MEGA.LabID, Locus, Allele) %>%
+#   unique() %>%
+#   separate(Allele, into = c("AlleleGroup", "Protein"), sep = "[:]", extra = "merge", remove = FALSE) %>%
+#   mutate(Locus_AlleleGroup = paste(Locus, AlleleGroup, sep = ""),
+#          dummy = 1) %>%
+#   spread(key = Locus_AlleleGroup, value = dummy) %>%
+#   gather(key = "Locus_AlleleGroup", value = "Dosage", `HLA-A*01`:`HLA-DRB1*16`) %>%
+#   mutate(Dosage = ifelse(is.na(Dosage), 0, Dosage))
+
+if (analysisData.alleleGroups %>%
+  filter(EXCLUDE_from_analysis == 0) %>%
+    select(MEGA.IID, Locus, Locus_AlleleGroup, Dosage.Locus_AlleleGroup) %>%
+    group_by(MEGA.IID, Locus) %>%
+    summarise(Total_Dosage.Locus = sum(Dosage.Locus_AlleleGroup)) %>%
+    arrange(desc(Total_Dosage.Locus)) %>%
+    filter(Total_Dosage.Locus != 2) %>%
+    nrow() == 0) {
+  print("All IIDs have exactly 2 alleles for each locus. Good!")
+  } else {
+    print("Oops, not all IIDs have exactly 2 alleles for each locus (and they should).")
+  }
+
+if (analysisData.alleleGroups %>%
+  filter(EXCLUDE_from_analysis == 0) %>%
+    select(RecordID, Locus, Locus_AlleleGroup, Dosage.Locus_AlleleGroup) %>%
+    group_by(RecordID, Locus) %>%
+    summarise(Total_Dosage.Locus = sum(Dosage.Locus_AlleleGroup)) %>%
+    arrange(desc(Total_Dosage.Locus)) %>%
+    filter(Total_Dosage.Locus != 2) %>%
+    nrow() == 0) {
+  print("All RecordIDs have exactly 2 alleles for each locus. Good!")
+  } else {
+    print("Oops, not all RecordIDs have exactly 2 alleles for each locus (and they should).")
+  }
+
+analysisData.alleleGroups %>%
+  split(., .$Locus_AlleleGroup) %>%
+  lapply(dim) %>%
+  unique()
+
+analysisData.alleleGroups
+
+setwd(dir)
+fwrite(analysisData.alleleGroups, "MEGA_041822_Imputed_HLA_AlleleGroups_v0.1_JRS.csv")
+fwrite(analysisData.alleleGroups, "MEGA_041822_Imputed_HLA_AlleleGroups_v0.1_JRS.tsv", sep = "\t")
+```
+
+#### Derive dosage of Celiac-associated heterodimers
+Pietzak, Michelle M., et al. “Stratifying Risk for Celiac Disease in a Large At-Risk United States Population by Using HLA Alleles.” Clinical Gastroenterology and Hepatology: The Official Clinical Practice Journal of the American Gastroenterological Association, vol. 7, no. 9, Sept. 2009, pp. 966–71. PubMed, https://doi.org/10.1016/j.cgh.2009.05.028.
+"HLA-DQ2.5 = DQA1*05-DQB1*0201 (DR3),
+ HLA-DQ2.2 = DQA1*0201-DQB1*0202 (DR7),
+ HLA-DR5 = DQA1*05-DQB1*03 ,
+ HLA DQ8 = DQA1*03-DQB1*0302 ."
+(https://pubmed.ncbi.nlm.nih.gov/19500688/)
+```{r}
+temp <- hla.imputed_long %>%
+  select(ID_colnames,
+         EXCLUDE_from_analysis, EXCLUDE_reason,
+         Locus, Allele) %>%
+  filter(Locus=="HLA-DQA1" | Locus=="HLA-DQB1") %>%
+  group_by(FamilyID, RecordID, MEGA.FID, MEGA.IID, MEGA.LabID,
+           EXCLUDE_from_analysis, EXCLUDE_reason,
+           Locus, Allele) %>%
+  summarise(Dosage = n()) %>%
+  ungroup() %>%
+  arrange(Dosage) %>%
+  mutate(DQA1_05 = ifelse(Locus=="HLA-DQA1" & grepl("05[:]", Allele)==TRUE, Dosage, 0),
+         DQA1_03 = ifelse(Locus=="HLA-DQA1" & grepl("03[:]", Allele)==TRUE, Dosage, 0),
+         DQA1_02 = ifelse(Locus=="HLA-DQA1" & grepl("02[:]", Allele)==TRUE, Dosage, 0),
+         DQA1_0201 = ifelse(Locus=="HLA-DQA1" & grepl("02[:]01", Allele)==TRUE, Dosage, 0),
+         DQB1_02 = ifelse(Locus=="HLA-DQB1" & grepl("02[:]", Allele)==TRUE, Dosage, 0),
+         DQB1_0202 = ifelse(Locus=="HLA-DQB1" & grepl("02[:]02", Allele)==TRUE, Dosage, 0),
+         DQB1_0302 = ifelse(Locus=="HLA-DQB1" & grepl("03[:]02", Allele)==TRUE, Dosage, 0),
+         # DQ7.5= DQA1*05-DQB1*03. Does not matter what the second number (i.e 0501, 0505 both count) (https://pubmed.ncbi.nlm.nih.gov/19500688/)
+         DQB1_03 = ifelse(Locus == "HLA-DQB1" & grepl("03[:]", Allele)==TRUE, Dosage, 0),
+         DQB1_0301 = ifelse(Locus == "HLA-DQB1" & grepl("03[:]01", Allele)==TRUE, Dosage, 0))
+temp %>%
+  select(MEGA.LabID,
+         EXCLUDE_from_analysis, EXCLUDE_reason,
+         Locus, Allele, Dosage,
+         DQA1_05, DQA1_03, DQA1_0201,
+         DQB1_02, DQB1_0202, DQB1_0301, DQB1_0302) %>%
+  unique()
+
+temp2 <- temp %>%
+  select(-c(Locus, Allele, Dosage)) %>%
+  group_by(FamilyID, RecordID, MEGA.FID, MEGA.IID, MEGA.LabID, EXCLUDE_from_analysis, EXCLUDE_reason) %>%
+  summarise(DQA1_05 = sum(DQA1_05),
+            DQA1_03 = sum(DQA1_03),
+            DQA1_02 = sum(DQA1_02),
+            DQA1_0201 = sum(DQA1_0201),
+            DQB1_02 = sum(DQB1_02),
+            DQB1_0202 = sum(DQB1_0202),
+            DQB1_0302 = sum(DQB1_0302),
+            DQB1_03 = sum(DQB1_03),
+            DQB1_0301 = sum(DQB1_0301)) %>%
+  ungroup() %>%
+  mutate( DQ2.5 = ifelse(DQA1_05>=1 & DQB1_02>=1, 1, 0),
+          DQ8 = ifelse(DQA1_03>=1 & DQB1_0302>=1, 1, 0),
+          #DQ2.2.archive040521 = ifelse(DQA1_02>=1 & DQB1_02>=1, 1, 0),
+          DQ2.2 = ifelse(DQA1_0201 >=1 & DQB1_0202 >=1, 1, 0),
+          DQ7.5 = ifelse(DQA1_05>=1 & DQB1_0301>=1, 1, 0) # SharpEtAl DQ7.5 (DQA1*05, DQB1*03:01)
+  )
+          # 7.5= DQA1*05-DQB1*03. Marisa Stahl: "Does not matter what the second number (i.e 0501, 0505 both count)" (https://pubmed.ncbi.nlm.nih.gov/19500688/)
+          # Pietzak: "HLA-DQ2.5  DQA1*05-DQB1*0201 (DR3), HLA-DQ2.2  DQA1*0201-DQB1*0202 (DR7), HLA-DR5  DQA1*05-DQB1*03, HLA DQ8 DQA1*03-DQB1*0302."
+          # https://www.ncbi.nlm.nih.gov/pmc/articles/PMC4297300/
+          # "The very few patients, who are not DQ2.5, DQ2.2, or DQ8, are almost all DQ7.5 (DQA1*05, DQB1*03:01) (Karell et al. 2003)."
+          # Karell K, Louka AS, Moodie SJ, Ascher H, Clot F, Greco L, Ciclitira PJ, Sollid LM, Partanen J. HLA types in celiac disease patients not carrying the DQA1*05-DQB1*02 (DQ2) heterodimer: results from the European genetics cluster on celiac disease. Hum Immunol. 2003;64:469–477. doi: 10.1016/S0198-8859(03)00027-2.
+          #DQ7.5_PietzakEtAl = ifelse(DQA1_05>=1 & DQB1_0301>=1, 1, 0),
+
+df.heterodimer_dosage <- temp2 %>% arrange(MEGA.LabID)
+
+print("Note: HTP0073A2 and HTP0374A carried DQ2.2 in 5/2021 version of data cleaning.")
+
+# View the dataframe:
+df.heterodimer_dosage
+```
+
+#### Summarize the data in its interim state:
+```{r}
+df.heterodimer_dosage %>%
+  group_by(DQ2.5, DQ8, DQ2.2, DQ7.5) %>%
+  summarise(N = n())
+print("Per Marsia Stahl, \"DQ7.5 with DQ2.2 is equivalent to DQ2.5 'in trans'\"")
+print("Observation: All participants who have DQ2.2+DQ7.5 (DQ2.5 in trans) also have imputed genotypes for DQ2.5.")
+print("Decision: For these participants with DQ2.2+DQ7.5+DQ2.2, consider them DQ2.5 in trans.")
+
+print("Therefore:")
+print("If DQ2.5 == 1 & DQ2.2 == 0 & DQ7.5 == 0, 'DQ2.5'")
+print("If DQ2.5 == 1 & DQ2.2 == 1 & DQ7.5 == 1, 'DQ2.5 or DQ2.5 in trans'")
+
+df.heterodimer_dosage %>%
+  mutate(DQ2.5_notInTrans = ifelse(DQ2.5 == 1 & DQ2.2 == 0 & DQ7.5 == 0, 1, 0),
+         DQ2.5_or_DQ2.5inTrans = ifelse(DQ2.5 == 1 & DQ2.2 == 1 & DQ7.5 == 1, 1, 0)) %>%
+  select(FamilyID, RecordID, MEGA.FID, MEGA.IID, MEGA.LabID,
+         EXCLUDE_from_analysis, EXCLUDE_reason,
+         DQ2.5_notInTrans, DQ2.5_or_DQ2.5inTrans) %>%
+  unique() %>%
+  group_by(DQ2.5_notInTrans, DQ2.5_or_DQ2.5inTrans) %>%
+  summarise(N = n())
+print("We have 9 samples that are marked as only DQ2.5 but not possibly DQ2.5 in trans. Meanwhile we have 27 that are DQ2.5 in trans but not DQ2.5. Good, this is how the code was supposed to work.")
+```
+
+#### Create a variable that reflects the combination of heterodimers carried by each participant
+```{r}
+df.Heterodimer_Combo <- df.heterodimer_dosage %>%
+  mutate(DQ2.5 = gsub("1", "DQ2.5", DQ2.5),
+         DQ2.5 = gsub("0", "", DQ2.5)) %>%
+  mutate(DQ8 = gsub("1", "DQ8", DQ8),
+         DQ8 = gsub("0", "", DQ8)) %>%
+  mutate(DQ7.5 = gsub("1", "DQ7.5", DQ7.5),
+         DQ7.5 = gsub("0", "", DQ7.5)) %>%
+  mutate(DQ2.2 = gsub("1", "DQ2.2", DQ2.2),
+         DQ2.2 = gsub("0", "", DQ2.2)) %>%
+  mutate(Heterodimer_Combo = paste(DQ2.5, DQ8, DQ2.2, DQ7.5, sep = "+")) %>%
+  mutate(Heterodimer_Combo = gsub("[+][+]", "+", Heterodimer_Combo)) %>%
+  mutate(Heterodimer_Combo = gsub("[+][+]", "+", Heterodimer_Combo)) %>%
+  select(ID_colnames, EXCLUDE_from_analysis, EXCLUDE_reason,
+         Heterodimer_Combo) %>% #, DQ2.5, DQ8, DQ2.2, DQ7.5) %>%
+  unique() %>%
+  mutate(Heterodimer_Combo = ifelse(Heterodimer_Combo == "+DQ8+", "DQ8", Heterodimer_Combo),
+         Heterodimer_Combo = ifelse(Heterodimer_Combo == "+DQ7.5", "DQ7.5", Heterodimer_Combo),
+         Heterodimer_Combo = ifelse(Heterodimer_Combo == "DQ2.5+", "DQ2.5", Heterodimer_Combo),
+         Heterodimer_Combo = ifelse(Heterodimer_Combo == "+", "", Heterodimer_Combo),
+         Heterodimer_Combo = ifelse(Heterodimer_Combo == "+DQ8+DQ2.2+", "DQ8 + DQ2.2", Heterodimer_Combo),
+         Heterodimer_Combo = ifelse(Heterodimer_Combo == "+DQ2.2+", "DQ2.2", Heterodimer_Combo),
+         Heterodimer_Combo = ifelse(Heterodimer_Combo == "DQ2.5+DQ2.2+", "DQ2.5 + DQ2.2", Heterodimer_Combo),
+         Heterodimer_Combo = ifelse(Heterodimer_Combo == "+DQ8+DQ7.5", "DQ8 + DQ7.5", Heterodimer_Combo),
+         Heterodimer_Combo = ifelse(Heterodimer_Combo == "DQ2.5+DQ8+", "DQ2.5 + DQ8", Heterodimer_Combo),
+         Heterodimer_Combo = ifelse(Heterodimer_Combo == "DQ2.5+DQ2.2+DQ7.5", "DQ2.5 + DQ2.2 + DQ7.5", Heterodimer_Combo),
+         Heterodimer_Combo = ifelse(Heterodimer_Combo == "DQ2.5+DQ7.5", "DQ2.5 + DQ7.5", Heterodimer_Combo)) %>%
+  left_join(df.heterodimer_dosage, by = c(ID_colnames, "EXCLUDE_from_analysis", "EXCLUDE_reason")) %>%
+  #filter(Heterodimer_Combo == "") %>%
+  mutate(Heterodimer_Combo = ifelse(Heterodimer_Combo == "", "X + X", Heterodimer_Combo)) %>%
+  mutate(Heterodimer_Combo = ifelse(Heterodimer_Combo == "DQ7.5", "DQ7.5 + X",
+                                    ifelse(Heterodimer_Combo == "DQ2.5", "DQ2.5 + X",
+                                           ifelse(Heterodimer_Combo == "DQ2.2", "DQ2.2 + X",
+                                                  ifelse(Heterodimer_Combo == "DQ8", "DQ8 + X",
+                                                         Heterodimer_Combo)))))
+df.Heterodimer_Combo
+
+df.Heterodimer_Combo %>%
+  select(Heterodimer_Combo) %>%
+  unique() %>%
+  arrange(Heterodimer_Combo)
+# DQ2.2 + X				
+# DQ2.5 + DQ2.2				
+# DQ2.5 + DQ2.2 + DQ7.5				
+# DQ2.5 + DQ7.5				
+# DQ2.5 + DQ8				
+# DQ2.5 + X				
+# DQ7.5 + X				
+# DQ8 + DQ2.2				
+# DQ8 + DQ7.5				
+# DQ8 + X
+# X + X
+```
+
+#### Create a variable that represents HLA-DQ Genotype the same way as in the Sharp et al. paper
+```{r}
+# Notes:
+# Of the 15 HLA-DQ genotypes represented in the Sharp paper, only 11 were observed in the HTP imputed HLA dataset.
+# Individuals with imputed heterodimer combination DQ2.5 + DQ2.2 + DQ7.5 were assumed to be carriers of HLA-DQ2.5 in trans, rather than true HLA-DQ2.5 (phasing error).
+# Individuals with other combinations involving HLA-DQ2.5 were assumed to have true HLA-DQ2.5.
+# Of course, these assumptions may be flawed given that this is imputed HLA data.
+
+# 15 genotypes reported in the Sharp paper (* not observed in HTP):
+# *DQ2.5/DQ2.5
+# DQ2.5/DQ2.2
+# DQ7.5/DQ2.2
+# DQ2.5/DQ8
+# DQ2.5/X
+# DQ7.5/DQ2.5
+# *DQ8/DQ8
+# DQ2.2/DQ8
+# *DQ2.2/DQ2.2
+# DQ7.5/DQ8
+# DQ8/X
+# DQ2.2/X
+# DQ7.5/X
+# DQ7.5/DQ7.5
+# X/X
+
+df.HLA_DQ_Genotype <- df.Heterodimer_Combo %>%
+  mutate(HLA_DQ_Genotype = ifelse(Heterodimer_Combo == "DQ2.5 + DQ2.5", "DQ2.5/DQ2.5",
+                                  ifelse(Heterodimer_Combo == "DQ2.5 + DQ2.2", "DQ2.5/DQ2.2",
+                                         ifelse(Heterodimer_Combo == "DQ2.5 + DQ2.2 + DQ7.5", "DQ7.5/DQ2.2", # This assumption has since been validated for the Celiac cases via molecular HLA typing.
+                                                ifelse(Heterodimer_Combo == "DQ2.5 + DQ8", "DQ2.5/DQ8",
+                                                       ifelse(Heterodimer_Combo == "DQ2.5 + X", "DQ2.5/X",
+                                                              ifelse(Heterodimer_Combo == "DQ2.5 + DQ7.5", "DQ7.5/DQ2.5",
+                                                                     ifelse(Heterodimer_Combo == "DQ8 + DQ8", "DQ8/DQ8",
+                                                                            ifelse(Heterodimer_Combo == "DQ8 + DQ2.2", "DQ2.2/DQ8",
+                                                                                   ifelse(Heterodimer_Combo == "DQ2.2 + .DQ2.2", "DQ2.2/DQ2.2",
+                                                                                          ifelse(Heterodimer_Combo == "DQ8 + DQ7.5", "DQ7.5/DQ8",
+                                                                                                 ifelse(Heterodimer_Combo == "DQ8 + X", "DQ8/X",
+                                                                                                        ifelse(Heterodimer_Combo == "DQ2.2 + X", "DQ2.2/X",
+                                                                                                               ifelse(Heterodimer_Combo == "DQ7.5 + X", "DQ7.5/X",
+                                                                                                                      ifelse(Heterodimer_Combo == "DQ7.5 + DQ7.5", "DQ7.5/DQ7.5",
+                                                                                                                             ifelse(Heterodimer_Combo == "X + X", "X/X",
+                                                                                                                                    NA)))))))))))))))) %>%
+  rename(Imputed_heterodimers = Heterodimer_Combo) %>%
+  select(ID_colnames, EXCLUDE_from_analysis, EXCLUDE_reason,
+         DQ2.5, DQ8, DQ2.2, DQ7.5, Imputed_heterodimers, HLA_DQ_Genotype)
+
+#### Print the dataframe:
+df.HLA_DQ_Genotype
+```
+
+#### Print the imputed heterodimers and their translation to an HLA-DQ genotype as reported in Sharp et al., 2019:
+```{r}
+Sharp2019_Genotypes <- Table_S2 %>%
+  select(`HLA-DQ.Genotype`) %>%
+  rename(HLA_DQ_Genotype = `HLA-DQ.Genotype`) %>%
+  filter(HLA_DQ_Genotype != "* Frequency in case-control data as called by SNP strategy (Table 1)" &
+           HLA_DQ_Genotype != "Table 1: HLA-DQ genotypes included in the CD-GRS by odds ratio") %>%
+  mutate(HLA_DQ_Genotype = factor(HLA_DQ_Genotype))
+Sharp2019_Genotypes
+
+df.HLA_DQ_Genotype %>%
+  filter(is.na(Imputed_heterodimers) | is.na(HLA_DQ_Genotype))
+
+alleles_to_heterodimers <- df.heterodimer_dosage %>%
+  select(DQA1_05:DQB1_0301, DQ2.5:DQ7.5) %>%
+  unique() %>%
+  gather(key = "Heterodimer", value = "PresentAbsent", DQ2.5:DQ7.5) %>%
+  select(Heterodimer, PresentAbsent, everything()) %>%
+  filter(PresentAbsent == 1)
+
+heterodimers_to_HLAgenotype <- Sharp2019_Genotypes %>%
+  left_join(df.HLA_DQ_Genotype %>%
+              select(Imputed_heterodimers, HLA_DQ_Genotype) %>%
+              unique(),
+            by = c("HLA_DQ_Genotype")) %>%
+  select(Imputed_heterodimers, HLA_DQ_Genotype) %>%
+  mutate(Imputed_heterodimers = ifelse(is.na(Imputed_heterodimers), "N/A (Not observed in HTP)", Imputed_heterodimers))
+
+alleles_to_heterodimers
+
+heterodimers_to_HLAgenotype
+```
+
+#### Output `heterodimers_to_HLAgenotype` to CSV and TSV
+```{r}
+setwd(dir)
+fwrite(heterodimers_to_HLAgenotype, "HLA_041822_Imputed_HLA_heterodimers_to_Inferred_HLADQ_Genotype_v0.1_JRS.csv")
+```
+
+#### Verify that each HTP_ID is only included in this dataframe once after EXCLUDE filter
+```{r}
+df.HLA_DQ_Genotype %>%
+  filter(EXCLUDE_from_analysis == 0) %>%
+  group_by(RecordID) %>%
+  summarise(N = n()) %>%
+  arrange(desc(N)) %>%
+  filter(N > 1)
+
+print("Good.")
+```
+
+#### Verify that each participant has exactly one HLA-DQ genotype, and only one status per allele (0 or 1):
+```{r}
+df.HLA_DQ_Genotype %>%
+  select(MEGA.IID, HLA_DQ_Genotype) %>%
+  group_by(MEGA.IID) %>%
+  summarise(N = n()) %>%
+  arrange(desc(N)) %>%
+  filter(N != 1 | is.na(N))
+
+df.HLA_DQ_Genotype %>%
+  select(MEGA.IID, HLA_DQ_Genotype) %>%
+  group_by(MEGA.IID, HLA_DQ_Genotype) %>%
+  summarise(N = n()) %>%
+  arrange(desc(N)) %>%
+  filter(N != 1 | is.na(N))
+
+print("Good, each participant has exactly one HLA-DQ genotype, and only one status per allele (0 or 1).")
+```
+
+#### Prepare long-format dataset of HLA-DQ genotypes (1 if the person has the genotype, 0 if they have some other genotype)
+```{r}
+df.HLA_DQ_Genotype.LONG <- df.HLA_DQ_Genotype %>%
+  select(-c(DQ2.5, DQ8, DQ2.2, DQ7.5, Imputed_heterodimers)) %>%
+  unique() %>%
+  mutate(dummy = 1) %>%
+  spread(key = HLA_DQ_Genotype, value = dummy) %>%
+  gather(key = HLA_DQ_Genotype, value = Dosage, `DQ2.2/DQ8`:`X/X`) %>%
+  mutate(Dosage = ifelse(is.na(Dosage), 0, Dosage))
+
+df.HLA_DQ_Genotype.LONG
+```
+
+#### Prepare long-format dataset of HLA-DQ genotypes (1 if the person has the genotype, 0 if they have some other genotype)
+```{r}
+temp1 <- df.HLA_DQ_Genotype %>%
+  select(ID_colnames, EXCLUDE_from_analysis, EXCLUDE_reason, HLA_DQ_Genotype) %>%
+  separate(HLA_DQ_Genotype, into = c("Heterodimer1", "Heterodimer2"), sep = "/", extra = "merge", remove = TRUE) %>%
+  select(ID_colnames, EXCLUDE_from_analysis, EXCLUDE_reason, Heterodimer1) %>%
+  unique() %>%
+  mutate(Heterodimer_Index = 1) %>%
+  rename(Heterodimer = Heterodimer1)
+
+temp2 <- df.HLA_DQ_Genotype %>%
+  select(ID_colnames, EXCLUDE_from_analysis, EXCLUDE_reason, HLA_DQ_Genotype) %>%
+  separate(HLA_DQ_Genotype, into = c("Heterodimer1", "Heterodimer2"), sep = "/", extra = "merge", remove = TRUE) %>%
+  select(ID_colnames, EXCLUDE_from_analysis, EXCLUDE_reason, Heterodimer2) %>%
+  unique() %>%
+  mutate(Heterodimer_Index = 2) %>%
+  rename(Heterodimer = Heterodimer2)
+
+df.HLA_heterodimers.LONG <- rbind(temp1, temp2) %>%
+  group_by(FamilyID, RecordID, MEGA.FID,
+           MEGA.IID, MEGA.LabID,
+           EXCLUDE_from_analysis, EXCLUDE_reason, Heterodimer) %>%
+  summarise(Dosage = n()) %>%
+  spread(key = Heterodimer, value = Dosage) %>%
+  gather(DQ2.2:X, key = Heterodimer, value = Dosage) %>%
+  mutate(Dosage = ifelse(is.na(Dosage), 0, Dosage))
+
+df.HLA_heterodimers.LONG
+```
+
+#### Remove the exclusion columns; we will add them back once the analysis metadata is finalized
+```{r}
+df.HLA_DQ_Genotype01 <- df.HLA_DQ_Genotype %>%
+  select(-c(EXCLUDE_from_analysis, EXCLUDE_reason))
+
+df.HLA_DQ_Genotype.LONG01 <- df.HLA_DQ_Genotype.LONG %>%
+  select(-c(EXCLUDE_from_analysis, EXCLUDE_reason))
+
+df.HLA_DQ_Genotype01
+df.HLA_DQ_Genotype.LONG01
+```
+
+#### Output datasets to CSV and TSV
+```{r}
+setwd(dir)
+fwrite(df.HLA_DQ_Genotype01, "HLA_041822_HLA_Dosage_Heterodimers_DQgenotypes_SharpDQ7.5_v0.1_JRS.csv")
+fwrite(df.HLA_DQ_Genotype01, "HLA_041822_HLA_Dosage_Heterodimers_DQgenotypes_SharpDQ7.5_v0.1_JRS.tsv", sep = "\t")
+
+setwd(dir)
+fwrite(df.HLA_DQ_Genotype.LONG01, "HLA_041822_HLA_Genotype_Dosage_LONG_v0.1_JRS.csv")
+fwrite(df.HLA_DQ_Genotype.LONG01, "HLA_041822_HLA_Genotype_Dosage_LONG_v0.1_JRS.tsv", sep = "\t")
+
+setwd(dir)
+fwrite(df.HLA_DQ_Genotype.LONG01, "HLA_041822_HLA_Heterodimers_Dosage_LONG_v0.1_JRS.csv")
+fwrite(df.HLA_DQ_Genotype.LONG01, "HLA_041822_HLA_Heterodimers_Dosage_LONG_v0.1_JRS.tsv", sep = "\t")
+```
